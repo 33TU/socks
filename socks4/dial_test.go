@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/33TU/socks/socks/socks4"
+	"github.com/33TU/socks/socks4"
 )
 
 // startMockSOCKS4Server creates a mock SOCKS4 proxy for tests.

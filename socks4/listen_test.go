@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/33TU/socks/socks/socks4"
+	"github.com/33TU/socks/socks4"
 )
 
 // genRandom creates n random bytes.

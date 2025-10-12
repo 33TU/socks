@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/33TU/socks/socks/socks4"
+	"github.com/33TU/socks/socks4"
 )
 
 func Test_Response_Init_Validate(t *testing.T) {

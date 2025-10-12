@@ -7,7 +7,7 @@ import (
 	"io"
 	"net"
 
-	"github.com/33TU/socks/socks/internal"
+	"github.com/33TU/socks/internal"
 )
 
 var (

@@ -6,7 +6,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/33TU/socks/socks/socks4"
+	"github.com/33TU/socks/socks4"
 )
 
 var (
