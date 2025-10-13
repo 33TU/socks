@@ -41,16 +41,25 @@ curl -v --socks4 127.0.0.1:1080 https://example.com
 ## Example: Using the SOCKS4 Dialer
 
 ```go
-dialer := socks4.NewDialer("127.0.0.1:1080", "tcp", "user", nil)
+func main() {
+	// Create a new SOCKS4 dialer (proxyAddr, userID, baseDialFunc)
+	dialer := socks4.NewDialer("127.0.0.1:1080", "user", nil)
 
-conn, err := dialer.Connect("example.com:80")
-if err != nil {
-    log.Fatal(err)
+	// Establish a connection through the SOCKS4 proxy
+	conn, err := dialer.DialContext(context.Background(), "tcp", "example.com:80")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Send an HTTP request through the proxy
+	fmt.Fprintf(conn, "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+
+	// Print the response
+	if _, err := io.Copy(os.Stdout, conn); err != nil {
+		log.Fatal(err)
+	}
 }
-defer conn.Close()
-
-fmt.Fprintf(conn, "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
-io.Copy(os.Stdout, conn)
 ```
 
 ---
