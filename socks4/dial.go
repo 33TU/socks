@@ -6,38 +6,37 @@ import (
 	"net"
 )
 
-var (
-	// DefaultDialer is the default internal net.Dialer.
-	DefaultDialer = &net.Dialer{}
-)
+// DefaultDialer is the default underlying dialer, which uses net.Dialer.DialContext.
+var DefaultDialer = (&net.Dialer{}).DialContext
+
+// DialFunc is a function compatible with net.Dialer.DialContext.
+type DialFunc = func(ctx context.Context, network, address string) (net.Conn, error)
 
 // Dialer implements a SOCKS4/4a proxy dialer.
 type Dialer struct {
-	ProxyAddr    string      // e.g. "127.0.0.1:1080"
-	ProxyNetwork string      // e.g. "tcp"
-	UserID       string      // optional SOCKS4 user ID
-	BaseDialer   *net.Dialer // optional underlying dialer (nil=DefaultDialer)
+	ProxyAddr string   // e.g. "127.0.0.1:1080"
+	UserID    string   // optional SOCKS4 user ID
+	DialFunc  DialFunc // optional underlying dialer (nil=DefaultDialer)
 }
 
 // NewDialer creates a new SOCKS4 dialer instance.
-func NewDialer(proxyAddr, proxyNetwork, userID string, base *net.Dialer) *Dialer {
+func NewDialer(proxyAddr, userID string, dialFunc DialFunc) *Dialer {
 	return &Dialer{
-		ProxyAddr:    proxyAddr,
-		ProxyNetwork: proxyNetwork,
-		UserID:       userID,
-		BaseDialer:   base,
+		ProxyAddr: proxyAddr,
+		UserID:    userID,
+		DialFunc:  dialFunc,
 	}
 }
 
-// ConnectContext establishes a connection via SOCKS4/4a proxy (CMD_CONNECT).
-func (d *Dialer) ConnectContext(ctx context.Context, addr string) (net.Conn, error) {
-	base := d.BaseDialer
-	if base == nil {
-		base = DefaultDialer
+// DialContext establishes a connection via SOCKS4/4a proxy (CMD_CONNECT).
+func (d *Dialer) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
+	dialFunc := d.DialFunc
+	if dialFunc == nil {
+		dialFunc = DefaultDialer
 	}
 
 	// Connect to proxy
-	proxyConn, err := base.DialContext(ctx, d.ProxyNetwork, d.ProxyAddr)
+	proxyConn, err := dialFunc(ctx, network, d.ProxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to proxy: %w", err)
 	}
@@ -56,7 +55,7 @@ func (d *Dialer) ConnectContext(ctx context.Context, addr string) (net.Conn, err
 	}()
 
 	// Parse target host/port
-	host, portStr, err := net.SplitHostPort(addr)
+	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
 		proxyConn.Close()
 		return nil, fmt.Errorf("invalid target address: %w", err)
@@ -98,21 +97,21 @@ func (d *Dialer) ConnectContext(ctx context.Context, addr string) (net.Conn, err
 	return proxyConn, nil
 }
 
-// Connect connects to the specified address via SOCKS4/4a proxy.
-func (d *Dialer) Connect(addr string) (net.Conn, error) {
-	return d.ConnectContext(context.Background(), addr)
+// Dial establishes a connection via SOCKS4/4a proxy (CMD_CONNECT).
+func (d *Dialer) Dial(network string, address string) (net.Conn, error) {
+	return d.DialContext(context.Background(), network, address)
 }
 
 // BindContext establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).
 // It returns the active connection and the proxy’s bind address once ready.
-func (d *Dialer) BindContext(ctx context.Context, addr string) (net.Conn, *net.TCPAddr, <-chan error, error) {
-	base := d.BaseDialer
-	if base == nil {
-		base = DefaultDialer
+func (d *Dialer) BindContext(ctx context.Context, network string, address string) (net.Conn, *net.TCPAddr, <-chan error, error) {
+	dialFunc := d.DialFunc
+	if dialFunc == nil {
+		dialFunc = DefaultDialer
 	}
 
 	// Connect to proxy
-	proxyConn, err := base.DialContext(ctx, d.ProxyNetwork, d.ProxyAddr)
+	proxyConn, err := dialFunc(ctx, network, d.ProxyAddr)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("connect to proxy: %w", err)
 	}
@@ -131,7 +130,7 @@ func (d *Dialer) BindContext(ctx context.Context, addr string) (net.Conn, *net.T
 	}()
 
 	// Parse target host:port
-	host, portStr, err := net.SplitHostPort(addr)
+	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
 		proxyConn.Close()
 		return nil, nil, nil, fmt.Errorf("invalid target address: %w", err)
@@ -191,9 +190,10 @@ func (d *Dialer) BindContext(ctx context.Context, addr string) (net.Conn, *net.T
 	return proxyConn, bindAddr, readyCh, nil
 }
 
-// Bind establishes a passive BIND connection using a background context.
-func (d *Dialer) Bind(addr string) (net.Conn, *net.TCPAddr, <-chan error, error) {
-	return d.BindContext(context.Background(), addr)
+// Bind establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).
+// It returns the active connection and the proxy’s bind address once ready.
+func (d *Dialer) Bind(network string, address string) (net.Conn, *net.TCPAddr, <-chan error, error) {
+	return d.BindContext(context.Background(), network, address)
 }
 
 // parsePort converts a port string to uint16.

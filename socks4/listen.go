@@ -12,8 +12,8 @@ import (
 // ListenerOptions defines behavior for a SOCKS4 listener.
 // If a callback returns an error, the client connection is closed.
 type ListenerOptions struct {
-	// BaseDialer is used for dialing. (nil=DefaultDialer)
-	BaseDialer *net.Dialer
+	// DialFunc is an optional underlying dialer (nil=DefaultDialer)
+	DialFunc DialFunc
 
 	// RequestReadTimeout is the maximum duration to wait for a request.
 	RequestReadTimeout time.Duration
@@ -65,12 +65,12 @@ func OnConnectDefault(ctx context.Context, opts *ListenerOptions, conn net.Conn,
 	port := req.Port
 	address := net.JoinHostPort(host, strconv.Itoa(int(port)))
 
-	dialer := opts.BaseDialer
-	if dialer == nil {
-		dialer = DefaultDialer
+	dialFunc := opts.DialFunc
+	if dialFunc == nil {
+		dialFunc = DefaultDialer
 	}
 
-	target, err := dialer.DialContext(ctx, "tcp", address)
+	target, err := dialFunc(ctx, "tcp", address)
 	if err != nil {
 		var resp Response
 		resp.Init(0, ReqRejected, req.Port, req.GetIP())

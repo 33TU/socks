@@ -56,10 +56,10 @@ func TestDialer_Connect_Success(t *testing.T) {
 	})
 	defer stop()
 
-	d := &socks4.Dialer{ProxyAddr: proxyAddr, ProxyNetwork: "tcp", UserID: "tester"}
-	conn, err := d.ConnectContext(context.Background(), "127.0.0.1:1234")
+	d := &socks4.Dialer{ProxyAddr: proxyAddr, UserID: "tester"}
+	conn, err := d.DialContext(context.Background(), "tcp", "127.0.0.1:1234")
 	if err != nil {
-		t.Fatalf("ConnectContext failed: %v", err)
+		t.Fatalf("DialContext failed: %v", err)
 	}
 	defer conn.Close()
 
@@ -86,8 +86,8 @@ func TestDialer_Connect_Rejected(t *testing.T) {
 	})
 	defer stop()
 
-	d := &socks4.Dialer{ProxyAddr: proxyAddr, ProxyNetwork: "tcp"}
-	_, err := d.ConnectContext(context.Background(), "127.0.0.1:9999")
+	d := &socks4.Dialer{ProxyAddr: proxyAddr}
+	_, err := d.DialContext(context.Background(), "tcp", "127.0.0.1:9999")
 	if err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("expected rejection error, got %v", err)
 	}
@@ -117,8 +117,8 @@ func TestDialer_Bind_Success(t *testing.T) {
 	})
 	defer stop()
 
-	d := &socks4.Dialer{ProxyAddr: proxyAddr, ProxyNetwork: "tcp", UserID: "binder"}
-	conn, bindAddr, readyCh, err := d.BindContext(context.Background(), "127.0.0.1:0")
+	d := &socks4.Dialer{ProxyAddr: proxyAddr, UserID: "binder"}
+	conn, bindAddr, readyCh, err := d.BindContext(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("BindContext failed: %v", err)
 	}
@@ -153,8 +153,8 @@ func TestDialer_Bind_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	d := &socks4.Dialer{ProxyAddr: proxyAddr, ProxyNetwork: "tcp", UserID: "canceltest"}
-	conn, _, readyCh, err := d.BindContext(ctx, "127.0.0.1:0")
+	d := &socks4.Dialer{ProxyAddr: proxyAddr, UserID: "canceltest"}
+	conn, _, readyCh, err := d.BindContext(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("BindContext failed: %v", err)
 	}

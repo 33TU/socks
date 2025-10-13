@@ -69,10 +69,10 @@ func TestDialerAndServer_Connect_Success(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Create SOCKS4 dialer
-	dialer := socks4.NewDialer(proxyLn.Addr().String(), "tcp", "user", nil)
+	dialer := socks4.NewDialer(proxyLn.Addr().String(), "user", nil)
 
 	targetAddr := echoLn.Addr().String()
-	conn, err := dialer.ConnectContext(context.Background(), targetAddr)
+	conn, err := dialer.DialContext(context.Background(), "tcp", targetAddr)
 	if err != nil {
 		t.Fatalf("Dialer.Connect failed: %v", err)
 	}
@@ -148,8 +148,8 @@ func TestDialerAndServer_Bind_Success(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	dialer := socks4.NewDialer(proxyLn.Addr().String(), "tcp", "user", nil)
-	conn, bindAddr, readyCh, err := dialer.BindContext(ctx, "127.0.0.1:0")
+	dialer := socks4.NewDialer(proxyLn.Addr().String(), "user", nil)
+	conn, bindAddr, readyCh, err := dialer.BindContext(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("BindContext failed: %v", err)
 	}
