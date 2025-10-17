@@ -44,7 +44,7 @@ func TestDialer_Connect_Success(t *testing.T) {
 		}
 
 		var resp socks4.Response
-		resp.Init(0, socks4.ReqGranted, req.Port, req.GetIP())
+		resp.Init(0, socks4.RepGranted, req.Port, req.GetIP())
 		resp.WriteTo(c)
 
 		// Echo test
@@ -81,7 +81,7 @@ func TestDialer_Connect_Rejected(t *testing.T) {
 		var req socks4.Request
 		req.ReadFrom(c)
 		var resp socks4.Response
-		resp.Init(0, socks4.ReqRejected, 0, net.IPv4zero)
+		resp.Init(0, socks4.RepRejected, 0, net.IPv4zero)
 		resp.WriteTo(c)
 	})
 	defer stop()
@@ -105,14 +105,14 @@ func TestDialer_Bind_Success(t *testing.T) {
 
 		// Send first reply (bind address)
 		var resp1 socks4.Response
-		resp1.Init(0, socks4.ReqGranted, 5555, net.IPv4(127, 0, 0, 1))
+		resp1.Init(0, socks4.RepGranted, 5555, net.IPv4(127, 0, 0, 1))
 		resp1.WriteTo(c)
 
 		time.Sleep(100 * time.Millisecond)
 
 		// Send second reply (connection established)
 		var resp2 socks4.Response
-		resp2.Init(0, socks4.ReqGranted, 5555, net.IPv4(127, 0, 0, 1))
+		resp2.Init(0, socks4.RepGranted, 5555, net.IPv4(127, 0, 0, 1))
 		resp2.WriteTo(c)
 	})
 	defer stop()
@@ -144,7 +144,7 @@ func TestDialer_Bind_ContextCancel(t *testing.T) {
 		var req socks4.Request
 		req.ReadFrom(c)
 		var resp1 socks4.Response
-		resp1.Init(0, socks4.ReqGranted, 4444, net.IPv4(127, 0, 0, 1))
+		resp1.Init(0, socks4.RepGranted, 4444, net.IPv4(127, 0, 0, 1))
 		resp1.WriteTo(c)
 		time.Sleep(2 * time.Second)
 	})

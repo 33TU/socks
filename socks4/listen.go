@@ -54,7 +54,7 @@ func OnRequestDefault(ctx context.Context, opts *ListenerOptions, conn net.Conn,
 		return opts.OnBind(ctx, opts, conn, req)
 	default:
 		var resp Response
-		resp.Init(0, ReqRejected, 0, net.IPv4zero)
+		resp.Init(0, RepRejected, 0, net.IPv4zero)
 		resp.WriteTo(conn)
 		return fmt.Errorf("unknown command: %d", req.Command)
 	}
@@ -73,14 +73,14 @@ func OnConnectDefault(ctx context.Context, opts *ListenerOptions, conn net.Conn,
 	target, err := dialFunc(ctx, "tcp", address)
 	if err != nil {
 		var resp Response
-		resp.Init(0, ReqRejected, req.Port, req.GetIP())
+		resp.Init(0, RepRejected, req.Port, req.GetIP())
 		resp.WriteTo(conn)
 		return fmt.Errorf("connect to %s failed: %w", address, err)
 	}
 	defer target.Close()
 
 	var resp Response
-	resp.Init(0, ReqGranted, req.Port, req.GetIP())
+	resp.Init(0, RepGranted, req.Port, req.GetIP())
 	resp.WriteTo(conn)
 
 	// Bidirectional copy
@@ -104,7 +104,7 @@ func OnConnectDefault(ctx context.Context, opts *ListenerOptions, conn net.Conn,
 
 func OnBindDefault(ctx context.Context, opts *ListenerOptions, conn net.Conn, req *Request) error {
 	var resp Response
-	resp.Init(0, ReqRejected, 0, net.IPv4zero)
+	resp.Init(0, RepRejected, 0, net.IPv4zero)
 	resp.WriteTo(conn)
 	return nil
 }

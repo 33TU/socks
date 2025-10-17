@@ -36,7 +36,7 @@ func (r *Response) Validate() error {
 		return ErrInvalidResponseVersion
 	}
 	switch r.Code {
-	case ReqGranted, ReqRejected, ReqIdentFailed, ReqUserIDMismatch:
+	case RepGranted, RepRejected, RepIdentFailed, RepUserIDMismatch:
 		return nil
 	default:
 		return ErrInvalidResponseCode
@@ -45,7 +45,7 @@ func (r *Response) Validate() error {
 
 // IsGranted reports whether the response indicates success.
 func (r *Response) IsGranted() bool {
-	return r.Code == ReqGranted
+	return r.Code == RepGranted
 }
 
 // GetIP returns the IPv4 address as net.IP.
@@ -84,13 +84,13 @@ func (r *Response) WriteTo(dst io.Writer) (int64, error) {
 func (r *Response) String() string {
 	var desc string
 	switch r.Code {
-	case ReqGranted:
+	case RepGranted:
 		desc = "granted"
-	case ReqRejected:
+	case RepRejected:
 		desc = "rejected"
-	case ReqIdentFailed:
+	case RepIdentFailed:
 		desc = "identd failed"
-	case ReqUserIDMismatch:
+	case RepUserIDMismatch:
 		desc = "userid mismatch"
 	default:
 		desc = fmt.Sprintf("unknown(0x%02x)", r.Code)

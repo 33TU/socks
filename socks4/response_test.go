@@ -18,7 +18,7 @@ func Test_Response_Init_Validate(t *testing.T) {
 			name: "valid granted",
 			resp: func() socks4.Response {
 				var r socks4.Response
-				r.Init(0x00, socks4.ReqGranted, 1080, net.IPv4(127, 0, 0, 1))
+				r.Init(0x00, socks4.RepGranted, 1080, net.IPv4(127, 0, 0, 1))
 				return r
 			}(),
 			wantErr: false,
@@ -27,7 +27,7 @@ func Test_Response_Init_Validate(t *testing.T) {
 			name: "invalid version",
 			resp: func() socks4.Response {
 				var r socks4.Response
-				r.Init(0x04, socks4.ReqGranted, 1080, net.IPv4(127, 0, 0, 1))
+				r.Init(0x04, socks4.RepGranted, 1080, net.IPv4(127, 0, 0, 1))
 				return r
 			}(),
 			wantErr: true,
@@ -55,12 +55,12 @@ func Test_Response_Init_Validate(t *testing.T) {
 
 func Test_Response_IsGranted(t *testing.T) {
 	var r socks4.Response
-	r.Init(0x00, socks4.ReqGranted, 1080, net.IPv4(127, 0, 0, 1))
+	r.Init(0x00, socks4.RepGranted, 1080, net.IPv4(127, 0, 0, 1))
 	if !r.IsGranted() {
 		t.Errorf("expected IsGranted() to be true")
 	}
 
-	r.Code = socks4.ReqRejected
+	r.Code = socks4.RepRejected
 	if r.IsGranted() {
 		t.Errorf("expected IsGranted() to be false")
 	}
@@ -68,7 +68,7 @@ func Test_Response_IsGranted(t *testing.T) {
 
 func Test_Response_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 	want := socks4.Response{}
-	want.Init(0x00, socks4.ReqGranted, 4321, net.IPv4(192, 168, 1, 10))
+	want.Init(0x00, socks4.RepGranted, 4321, net.IPv4(192, 168, 1, 10))
 
 	var buf bytes.Buffer
 	nw, err := want.WriteTo(&buf)
