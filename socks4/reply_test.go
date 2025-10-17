@@ -8,16 +8,16 @@ import (
 	"github.com/33TU/socks/socks4"
 )
 
-func Test_Response_Init_Validate(t *testing.T) {
+func Test_Reply_Init_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
-		resp    socks4.Response
+		resp    socks4.Reply
 		wantErr bool
 	}{
 		{
 			name: "valid granted",
-			resp: func() socks4.Response {
-				var r socks4.Response
+			resp: func() socks4.Reply {
+				var r socks4.Reply
 				r.Init(0x00, socks4.RepGranted, 1080, net.IPv4(127, 0, 0, 1))
 				return r
 			}(),
@@ -25,8 +25,8 @@ func Test_Response_Init_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid version",
-			resp: func() socks4.Response {
-				var r socks4.Response
+			resp: func() socks4.Reply {
+				var r socks4.Reply
 				r.Init(0x04, socks4.RepGranted, 1080, net.IPv4(127, 0, 0, 1))
 				return r
 			}(),
@@ -34,8 +34,8 @@ func Test_Response_Init_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid code",
-			resp: func() socks4.Response {
-				var r socks4.Response
+			resp: func() socks4.Reply {
+				var r socks4.Reply
 				r.Init(0x00, 0x99, 1080, net.IPv4(127, 0, 0, 1))
 				return r
 			}(),
@@ -53,8 +53,8 @@ func Test_Response_Init_Validate(t *testing.T) {
 	}
 }
 
-func Test_Response_IsGranted(t *testing.T) {
-	var r socks4.Response
+func Test_Reply_IsGranted(t *testing.T) {
+	var r socks4.Reply
 	r.Init(0x00, socks4.RepGranted, 1080, net.IPv4(127, 0, 0, 1))
 	if !r.IsGranted() {
 		t.Errorf("expected IsGranted() to be true")
@@ -66,8 +66,8 @@ func Test_Response_IsGranted(t *testing.T) {
 	}
 }
 
-func Test_Response_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
-	want := socks4.Response{}
+func Test_Reply_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
+	want := socks4.Reply{}
 	want.Init(0x00, socks4.RepGranted, 4321, net.IPv4(192, 168, 1, 10))
 
 	var buf bytes.Buffer
@@ -79,7 +79,7 @@ func Test_Response_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 		t.Errorf("expected 8 bytes written, got %d", nw)
 	}
 
-	var got socks4.Response
+	var got socks4.Reply
 	nr, err := got.ReadFrom(&buf)
 	if err != nil {
 		t.Fatalf("ReadFrom() failed: %v", err)
@@ -93,7 +93,7 @@ func Test_Response_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 	}
 }
 
-func Test_Response_ReadFrom_InvalidVersion(t *testing.T) {
+func Test_Reply_ReadFrom_InvalidVersion(t *testing.T) {
 	b := []byte{
 		0x04,       // invalid version (should be 0x00)
 		0x5A,       // granted
@@ -101,14 +101,14 @@ func Test_Response_ReadFrom_InvalidVersion(t *testing.T) {
 		127, 0, 0, 1,
 	}
 
-	var r socks4.Response
+	var r socks4.Reply
 	_, err := r.ReadFrom(bytes.NewReader(b))
 	if err == nil {
 		t.Fatal("expected error for invalid version")
 	}
 }
 
-func Test_Response_ReadFrom_InvalidCode(t *testing.T) {
+func Test_Reply_ReadFrom_InvalidCode(t *testing.T) {
 	b := []byte{
 		0x00,
 		0x99,       // invalid code
@@ -116,7 +116,7 @@ func Test_Response_ReadFrom_InvalidCode(t *testing.T) {
 		127, 0, 0, 1,
 	}
 
-	var r socks4.Response
+	var r socks4.Reply
 	_, err := r.ReadFrom(bytes.NewReader(b))
 	if err == nil {
 		t.Fatal("expected error for invalid code")

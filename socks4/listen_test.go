@@ -118,9 +118,9 @@ func TestDialerAndServer_Bind_Success(t *testing.T) {
 			defer bindLn.Close()
 
 			addr := bindLn.Addr().(*net.TCPAddr)
-			resp1 := socks4.Response{}
-			resp1.Init(0, socks4.RepGranted, uint16(addr.Port), net.ParseIP("127.0.0.1"))
-			resp1.WriteTo(conn)
+			rep1 := socks4.Reply{}
+			rep1.Init(0, socks4.RepGranted, uint16(addr.Port), net.ParseIP("127.0.0.1"))
+			rep1.WriteTo(conn)
 
 			peer, err := bindLn.Accept()
 			if err != nil {
@@ -129,9 +129,9 @@ func TestDialerAndServer_Bind_Success(t *testing.T) {
 			}
 			defer peer.Close()
 
-			resp2 := socks4.Response{}
-			resp2.Init(0, socks4.RepGranted, uint16(addr.Port), net.ParseIP("127.0.0.1"))
-			resp2.WriteTo(conn)
+			rep2 := socks4.Reply{}
+			rep2.Init(0, socks4.RepGranted, uint16(addr.Port), net.ParseIP("127.0.0.1"))
+			rep2.WriteTo(conn)
 
 			// bridge traffic
 			go io.Copy(peer, conn)

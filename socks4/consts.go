@@ -17,7 +17,7 @@ const (
 	DefaultMaxDomainLen = 256
 )
 
-// Reply codes (CD) for server responses.
+// Reply codes (CD) for server replies.
 const (
 	RepGranted        = 90
 	RepRejected       = 91

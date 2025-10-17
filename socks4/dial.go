@@ -81,11 +81,11 @@ func (d *Dialer) DialContext(ctx context.Context, network string, address string
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 
-	// Read response
-	var resp Response
+	// Read reply
+	var resp Reply
 	if _, err := resp.ReadFrom(proxyConn); err != nil {
 		proxyConn.Close()
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, fmt.Errorf("read reply: %w", err)
 	}
 
 	if !resp.IsGranted() {
@@ -155,11 +155,11 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 		return nil, nil, nil, fmt.Errorf("send BIND request: %w", err)
 	}
 
-	// Read first response (proxy bind address)
-	var resp1 Response
+	// Read first reply (proxy bind address)
+	var resp1 Reply
 	if _, err := resp1.ReadFrom(proxyConn); err != nil {
 		proxyConn.Close()
-		return nil, nil, nil, fmt.Errorf("read first BIND response: %w", err)
+		return nil, nil, nil, fmt.Errorf("read first BIND reply: %w", err)
 	}
 	if !resp1.IsGranted() {
 		proxyConn.Close()
@@ -175,10 +175,10 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 	go func() {
 		defer close(readyCh)
 
-		// Wait for second response (remote host connected)
-		var resp2 Response
+		// Wait for second reply (remote host connected)
+		var resp2 Reply
 		if _, err := resp2.ReadFrom(proxyConn); err != nil {
-			readyCh <- fmt.Errorf("read second BIND response: %w", err)
+			readyCh <- fmt.Errorf("read second BIND reply: %w", err)
 		}
 		if !resp2.IsGranted() {
 			readyCh <- fmt.Errorf("proxy rejected BIND finalization (code 0x%02x)", resp2.Code)

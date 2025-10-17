@@ -1,23 +1,25 @@
 # 🧦 socks
 
-A lightweight, dependency-free Go implementation of **SOCKS4**, **SOCKS4a**, and soon **SOCKS5**, providing both **client** and **server** support.
+A lightweight, dependency-free Go implementation of **SOCKS4**, **SOCKS4a**, and
+soon **SOCKS5**, providing both **client** and **server** support.
 
 ## Features
 
 ### ✅ SOCKS4 / SOCKS4a
 
-* Full client (`Dialer`) and server (`ServeContext`) implementations
-* Supports both `CONNECT` and `BIND` commands
-* Customizable via handler callbacks (`OnConnect`, `OnBind`, `OnRequest`, `OnError`, etc.)
-* Default handlers for simple proxying and rejection logic
-* Extensive tests covering end-to-end CONNECT and BIND behavior
-* `context.Context` support throughout client and server code
+- Full client (`Dialer`) and server (`ServeContext`) implementations
+- Supports both `CONNECT` and `BIND` commands
+- Customizable via handler callbacks (`OnConnect`, `OnBind`, `OnRequest`,
+  `OnError`, etc.)
+- Default handlers for simple proxying and rejection logic
+- Extensive tests covering end-to-end CONNECT and BIND behavior
+- `context.Context` support throughout client and server code
 
 ### 🧩 Planned
 
-* SOCKS5 support (both client and server)
-* Username/password authentication
-* UDP ASSOCIATE (SOCKS5)
+- SOCKS5 support (both client and server)
+- Username/password authentication
+- UDP ASSOCIATE (SOCKS5)
 
 ---
 
@@ -29,8 +31,7 @@ A lightweight, dependency-free Go implementation of **SOCKS4**, **SOCKS4a**, and
 go run ./cmd/socks4/main.go
 ```
 
-By default, it listens on `:1080` (TCP).
-You can test it using curl:
+By default, it listens on `:1080` (TCP). You can test it using curl:
 
 ```bash
 curl -v --socks4 127.0.0.1:1080 https://example.com
@@ -55,7 +56,7 @@ func main() {
 	// Send an HTTP request through the proxy
 	fmt.Fprintf(conn, "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
 
-	// Print the response
+	// Print the reply
 	if _, err := io.Copy(os.Stdout, conn); err != nil {
 		log.Fatal(err)
 	}
