@@ -170,7 +170,7 @@ func TestDialerAndServer_Bind_Success(t *testing.T) {
 	}()
 
 	// Wait for proxy ready
-	if err := <-readyCh; err != nil {
+	if result := <-readyCh; result.Err != nil {
 		t.Fatalf("readyCh error: %v", err)
 	}
 

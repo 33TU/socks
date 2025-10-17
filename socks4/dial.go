@@ -102,9 +102,15 @@ func (d *Dialer) Dial(network string, address string) (net.Conn, error) {
 	return d.DialContext(context.Background(), network, address)
 }
 
+// BindResult represents the second reply of a BIND operation.
+type BindResult struct {
+	Reply Reply
+	Err   error
+}
+
 // BindContext establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).
 // It returns the active connection and the proxy’s bind address once ready.
-func (d *Dialer) BindContext(ctx context.Context, network string, address string) (net.Conn, *net.TCPAddr, <-chan error, error) {
+func (d *Dialer) BindContext(ctx context.Context, network string, address string) (net.Conn, *net.TCPAddr, <-chan BindResult, error) {
 	dialFunc := d.DialFunc
 	if dialFunc == nil {
 		dialFunc = DefaultDialer
@@ -171,19 +177,25 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 		Port: int(resp1.Port),
 	}
 
-	readyCh := make(chan error, 1)
+	readyCh := make(chan BindResult, 1)
 	go func() {
 		defer close(readyCh)
 
 		// Wait for second reply (remote host connected)
 		var resp2 Reply
 		if _, err := resp2.ReadFrom(proxyConn); err != nil {
-			readyCh <- fmt.Errorf("read second BIND reply: %w", err)
+			readyCh <- BindResult{Err: fmt.Errorf("read second BIND reply: %w", err)}
+			return
+		}
+		if err := resp2.Validate(); err != nil {
+			readyCh <- BindResult{Err: fmt.Errorf("invalid second BIND reply: %w", err)}
+			return
 		}
 		if !resp2.IsGranted() {
-			readyCh <- fmt.Errorf("proxy rejected BIND finalization (code 0x%02x)", resp2.Code)
+			readyCh <- BindResult{Err: fmt.Errorf("proxy rejected BIND finalization (code 0x%02x)", resp2.Code)}
+			return
 		}
-		readyCh <- nil
+		readyCh <- BindResult{Reply: resp2, Err: nil}
 	}()
 
 	// Connection established
@@ -192,7 +204,7 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 
 // Bind establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).
 // It returns the active connection and the proxy’s bind address once ready.
-func (d *Dialer) Bind(network string, address string) (net.Conn, *net.TCPAddr, <-chan error, error) {
+func (d *Dialer) Bind(network string, address string) (net.Conn, *net.TCPAddr, <-chan BindResult, error) {
 	return d.BindContext(context.Background(), network, address)
 }
 

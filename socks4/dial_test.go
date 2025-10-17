@@ -129,9 +129,9 @@ func TestDialer_Bind_Success(t *testing.T) {
 	}
 
 	select {
-	case err := <-readyCh:
-		if err != nil {
-			t.Fatalf("bind ready failed: %v", err)
+	case result := <-readyCh:
+		if result.Err != nil {
+			t.Fatalf("bind ready failed: %v", result)
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("timeout waiting for BIND ready")
