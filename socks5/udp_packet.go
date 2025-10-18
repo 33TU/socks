@@ -18,12 +18,6 @@ var (
 )
 
 // UDPPacket represents a SOCKS5 UDP ASSOCIATE packet.
-// Wire format (RFC 1928 §7):
-//
-//	+----+------+------+----------+----------+----------+
-//	|RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
-//	+----+------+------+----------+----------+----------+
-//	| 2  |  1   |  1   | Variable |    2     | Variable |
 type UDPPacket struct {
 	Reserved [2]byte // RSV; must be 0x0000
 	Frag     byte    // FRAG; must be 0x00 (no fragmentation)
