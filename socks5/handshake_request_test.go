@@ -11,7 +11,7 @@ import (
 
 func Test_HandshakeRequest_Init_And_Validate(t *testing.T) {
 	r := &socks5.HandshakeRequest{}
-	r.Init(socks5.MethodNoAuth, socks5.MethodUserPass)
+	r.Init(socks5.SocksVersion, socks5.MethodNoAuth, socks5.MethodUserPass)
 
 	if err := r.Validate(); err != nil {
 		t.Fatalf("expected valid request, got %v", err)
@@ -31,7 +31,7 @@ func Test_HandshakeRequest_Init_And_Validate(t *testing.T) {
 
 func Test_HandshakeRequest_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 	orig := &socks5.HandshakeRequest{}
-	orig.Init(socks5.MethodNoAuth, socks5.MethodUserPass)
+	orig.Init(socks5.SocksVersion, socks5.MethodNoAuth, socks5.MethodUserPass)
 
 	var buf bytes.Buffer
 	n1, err := orig.WriteTo(&buf)
@@ -71,7 +71,7 @@ func Test_HandshakeRequest_ReadFrom_Truncated(t *testing.T) {
 
 func Test_HandshakeRequest_WriteTo_ErrorPropagation(t *testing.T) {
 	r := &socks5.HandshakeRequest{}
-	r.Init(socks5.MethodNoAuth)
+	r.Init(socks5.SocksVersion, socks5.MethodNoAuth)
 
 	failWriter := writerFunc(func(p []byte) (int, error) {
 		return 0, io.ErrClosedPipe
@@ -84,7 +84,7 @@ func Test_HandshakeRequest_WriteTo_ErrorPropagation(t *testing.T) {
 
 func Test_HandshakeRequest_String(t *testing.T) {
 	r := &socks5.HandshakeRequest{}
-	r.Init(socks5.MethodNoAuth, socks5.MethodUserPass)
+	r.Init(socks5.SocksVersion, socks5.MethodNoAuth, socks5.MethodUserPass)
 
 	if s := r.String(); s == "" {
 		t.Errorf("expected non-empty String() output")

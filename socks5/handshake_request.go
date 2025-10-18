@@ -21,8 +21,8 @@ type HandshakeRequest struct {
 }
 
 // Init initializes a handshake request with the given methods.
-func (h *HandshakeRequest) Init(methods ...byte) {
-	h.Version = SocksVersion
+func (h *HandshakeRequest) Init(version byte, methods ...byte) {
+	h.Version = version
 	h.NMethods = byte(len(methods))
 	h.Methods = append([]byte(nil), methods...) // copy
 }

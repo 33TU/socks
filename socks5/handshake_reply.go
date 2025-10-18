@@ -18,8 +18,8 @@ type HandshakeReply struct {
 }
 
 // Init initializes a handshake reply with the given method.
-func (h *HandshakeReply) Init(method byte) {
-	h.Version = SocksVersion
+func (h *HandshakeReply) Init(version byte, method byte) {
+	h.Version = version
 	h.Method = method
 }
 
