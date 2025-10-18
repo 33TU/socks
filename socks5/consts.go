@@ -47,9 +47,14 @@ const (
 	AuthVersionUserPass = 1
 )
 
-// GSS-API message types (MTYP) per RFC 1961.
+// GSS-API message types (MTYP)
 const (
 	GSSAPITypeInit  = 0x01
 	GSSAPITypeReply = 0x02
 	GSSAPITypeAbort = 0xFF
+)
+
+// GSS-API protocol version. (VER)
+const (
+	GSSAPIVersion = 1
 )

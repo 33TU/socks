@@ -11,7 +11,7 @@ import (
 
 func Test_GSSAPIReply_Init_And_Validate(t *testing.T) {
 	r := &socks5.GSSAPIReply{}
-	r.Init(0x01, socks5.GSSAPITypeReply, []byte{0xca, 0xfe, 0xba, 0xbe})
+	r.Init(socks5.GSSAPIVersion, socks5.GSSAPITypeReply, []byte{0xca, 0xfe, 0xba, 0xbe})
 
 	if err := r.Validate(); err != nil {
 		t.Fatalf("expected valid reply, got %v", err)
@@ -23,7 +23,7 @@ func Test_GSSAPIReply_Init_And_Validate(t *testing.T) {
 	}
 
 	// Empty token (non-abort)
-	r.Version = 0x01
+	r.Version = socks5.GSSAPIVersion
 	r.MsgType = socks5.GSSAPITypeReply
 	r.Token = nil
 	if err := r.Validate(); !errors.Is(err, socks5.ErrEmptyGSSAPIReplyToken) {
@@ -47,7 +47,7 @@ func Test_GSSAPIReply_Init_And_Validate(t *testing.T) {
 
 func Test_GSSAPIReply_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 	orig := &socks5.GSSAPIReply{}
-	orig.Init(0x01, socks5.GSSAPITypeReply, []byte{0xde, 0xad, 0xbe, 0xef})
+	orig.Init(socks5.GSSAPIVersion, socks5.GSSAPITypeReply, []byte{0xde, 0xad, 0xbe, 0xef})
 
 	var buf bytes.Buffer
 	n1, err := orig.WriteTo(&buf)
@@ -64,7 +64,7 @@ func Test_GSSAPIReply_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 	if n1 != n2 {
 		t.Errorf("expected %d bytes read, got %d", n1, n2)
 	}
-	if parsed.Version != 0x01 {
+	if parsed.Version != socks5.GSSAPIVersion {
 		t.Errorf("expected version 1, got %d", parsed.Version)
 	}
 	if parsed.MsgType != socks5.GSSAPITypeReply {
@@ -77,7 +77,7 @@ func Test_GSSAPIReply_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 
 func Test_GSSAPIReply_ReadFrom_Truncated(t *testing.T) {
 	data := []byte{
-		0x01, socks5.GSSAPITypeReply, 0x00, 0x04, // header: ver, mtyp, len=4
+		socks5.GSSAPIVersion, socks5.GSSAPITypeReply, 0x00, 0x04, // header: ver, mtyp, len=4
 		0xde, 0xad, // incomplete token
 	}
 	r := &socks5.GSSAPIReply{}
@@ -87,7 +87,7 @@ func Test_GSSAPIReply_ReadFrom_Truncated(t *testing.T) {
 }
 
 func Test_GSSAPIReply_ReadFrom_Abort(t *testing.T) {
-	data := []byte{0x01, socks5.GSSAPITypeAbort}
+	data := []byte{socks5.GSSAPIVersion, socks5.GSSAPITypeAbort}
 	r := &socks5.GSSAPIReply{}
 	n, err := r.ReadFrom(bytes.NewReader(data))
 	if err != nil {
@@ -103,7 +103,7 @@ func Test_GSSAPIReply_ReadFrom_Abort(t *testing.T) {
 
 func Test_GSSAPIReply_ReadFrom_EmptyOrTooLong(t *testing.T) {
 	// empty token (len=0)
-	data := []byte{0x01, socks5.GSSAPITypeReply, 0x00, 0x00}
+	data := []byte{socks5.GSSAPIVersion, socks5.GSSAPITypeReply, 0x00, 0x00}
 	r := &socks5.GSSAPIReply{}
 	if _, err := r.ReadFrom(bytes.NewReader(data)); !errors.Is(err, socks5.ErrEmptyGSSAPIReplyToken) {
 		t.Errorf("expected ErrEmptyGSSAPIReplyToken, got %v", err)
@@ -118,7 +118,7 @@ func Test_GSSAPIReply_ReadFrom_EmptyOrTooLong(t *testing.T) {
 
 func Test_GSSAPIReply_WriteTo_ErrorPropagation(t *testing.T) {
 	r := &socks5.GSSAPIReply{}
-	r.Init(0x01, socks5.GSSAPITypeReply, []byte{0xaa, 0xbb})
+	r.Init(socks5.GSSAPIVersion, socks5.GSSAPITypeReply, []byte{0xaa, 0xbb})
 
 	failWriter := writerFunc(func(p []byte) (int, error) {
 		return 0, io.ErrClosedPipe
@@ -131,7 +131,7 @@ func Test_GSSAPIReply_WriteTo_ErrorPropagation(t *testing.T) {
 
 func Test_GSSAPIReply_String(t *testing.T) {
 	r := &socks5.GSSAPIReply{}
-	r.Init(0x01, socks5.GSSAPITypeReply, []byte{0xde, 0xad})
+	r.Init(socks5.GSSAPIVersion, socks5.GSSAPITypeReply, []byte{0xde, 0xad})
 	if s := r.String(); s == "" {
 		t.Errorf("expected non-empty String() output")
 	}
