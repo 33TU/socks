@@ -98,10 +98,9 @@ func (r *UserPassRequest) ReadFrom(src io.Reader) (int64, error) {
 
 // WriteTo writes the username/password request to a writer.
 // Implements io.WriterTo.
-// Note: returns error if user or pass is too long.
 func (r *UserPassRequest) WriteTo(dst io.Writer) (int64, error) {
-	if len(r.Username) > 255 || len(r.Password) > 255 {
-		return 0, ErrUserPassTooLong
+	if err := r.Validate(); err != nil {
+		return 0, err
 	}
 
 	buf := []byte{

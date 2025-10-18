@@ -172,13 +172,9 @@ func (r *Request) ReadFrom(src io.Reader) (int64, error) {
 
 // WriteTo writes a SOCKS5 request to a Writer.
 // Implements the io.WriterTo interface.
-// Note: returns error if domain is too long.
 func (r *Request) WriteTo(dst io.Writer) (int64, error) {
-	if r.AddrType == AddrTypeDomain {
-		domainLen := len(r.Domain)
-		if domainLen == 0 || domainLen > 255 {
-			return 0, ErrInvalidReplyDomain
-		}
+	if err := r.Validate(); err != nil {
+		return 0, err
 	}
 
 	var total int64

@@ -34,8 +34,7 @@ func (r *GSSAPIRequest) Validate() error {
 		return ErrInvalidGSSAPIVersion
 	}
 	if r.MsgType == GSSAPITypeAbort {
-		// Abort messages have no token
-		return nil
+		return nil // Abort messages have no token
 	}
 	if len(r.Token) == 0 {
 		return ErrEmptyGSSAPIToken
@@ -82,10 +81,9 @@ func (r *GSSAPIRequest) ReadFrom(src io.Reader) (int64, error) {
 }
 
 // WriteTo writes the GSSAPI authentication request to a writer.
-// NOTE: returns error if token length is too long.
 func (r *GSSAPIRequest) WriteTo(dst io.Writer) (int64, error) {
-	if len(r.Token) > 65535 {
-		return 0, ErrGSSAPITokenTooLong
+	if err := r.Validate(); err != nil {
+		return 0, err
 	}
 
 	if r.MsgType == GSSAPITypeAbort {

@@ -156,13 +156,9 @@ func (r *Reply) ReadFrom(src io.Reader) (int64, error) {
 
 // WriteTo writes a SOCKS5 reply to a Writer.
 // Implements io.WriterTo.
-// Note: returns error if domain length is invalid.
 func (r *Reply) WriteTo(dst io.Writer) (int64, error) {
-	if r.AddrType == AddrTypeDomain {
-		domainLen := len(r.Domain)
-		if domainLen == 0 || domainLen > 255 {
-			return 0, ErrInvalidReplyDomain
-		}
+	if err := r.Validate(); err != nil {
+		return 0, err
 	}
 
 	hdr := [4]byte{r.Version, r.Reply, r.Reserved, r.AddrType}

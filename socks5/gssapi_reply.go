@@ -80,10 +80,9 @@ func (r *GSSAPIReply) ReadFrom(src io.Reader) (int64, error) {
 }
 
 // WriteTo writes the GSSAPI reply to a writer.
-// NOTE: returns error if token length is too long.
 func (r *GSSAPIReply) WriteTo(dst io.Writer) (int64, error) {
-	if len(r.Token) > 65535 {
-		return 0, ErrGSSAPIReplyTooLong
+	if err := r.Validate(); err != nil {
+		return 0, err
 	}
 
 	if r.MsgType == GSSAPITypeAbort {
