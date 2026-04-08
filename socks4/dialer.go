@@ -48,6 +48,19 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		conn.SetDeadline(deadline)
 	}
 
+	// Handle context cancellation
+	exitCh := make(chan struct{})
+	defer close(exitCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-exitCh:
+			return
+		}
+	}()
+
 	reply, err := d.doRequest(conn, CmdConnect, host, port)
 	if err != nil {
 		conn.Close()
@@ -94,6 +107,19 @@ func (d *Dialer) BindContext(
 	if ok {
 		conn.SetDeadline(deadline)
 	}
+
+	// Handle context cancellation
+	exitCh := make(chan struct{})
+	defer close(exitCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-exitCh:
+			return
+		}
+	}()
 
 	reply, err := d.doRequest(conn, CmdBind, host, port)
 	if err != nil {

@@ -85,6 +85,19 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		conn.SetDeadline(deadline)
 	}
 
+	// Handle context cancellation
+	exitCh := make(chan struct{})
+	defer close(exitCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-exitCh:
+			return
+		}
+	}()
+
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
 		return nil, err
@@ -135,6 +148,19 @@ func (d *Dialer) BindContext(
 	if ok {
 		conn.SetDeadline(deadline)
 	}
+
+	// Handle context cancellation
+	exitCh := make(chan struct{})
+	defer close(exitCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-exitCh:
+			return
+		}
+	}()
 
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
@@ -208,6 +234,19 @@ func (d *Dialer) UDPAssociateContext(
 		conn.SetDeadline(deadline)
 	}
 
+	// Handle context cancellation
+	exitCh := make(chan struct{})
+	defer close(exitCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-exitCh:
+			return
+		}
+	}()
+
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
 		return nil, nil, err
@@ -260,6 +299,12 @@ func (d *Dialer) ResolveContext(ctx context.Context, network, host string) (net.
 	if ok {
 		conn.SetDeadline(deadline)
 	}
+
+	// Handle context cancellation (ResolveContext uses defer conn.Close)
+	go func() {
+		<-ctx.Done()
+		conn.Close() // Safe to call multiple times
+	}()
 
 	if err := d.handshake(conn); err != nil {
 		return nil, err
