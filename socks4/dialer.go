@@ -19,6 +19,9 @@ type Dialer struct {
 
 // NewDialer creates a new SOCKS4 dialer instance.
 func NewDialer(proxyAddr, userID string, dialer socksnet.Dialer) *Dialer {
+	if dialer == nil {
+		dialer = socksnet.DefaultDialer
+	}
 	return &Dialer{
 		ProxyAddr: proxyAddr,
 		UserID:    userID,
@@ -26,27 +29,16 @@ func NewDialer(proxyAddr, userID string, dialer socksnet.Dialer) *Dialer {
 	}
 }
 
-// DialContext establishes a connection via SOCKS4/4a proxy (CMD_CONNECT).
-func (d *Dialer) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
-	dialer := d.Dialer
-	if dialer == nil {
-		dialer = socksnet.DefaultDialer
+// DialContext establishes a connection via SOCKS4/4a proxy (CONNECT command).
+func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := splitHostPort(ctx, address)
+	if err != nil {
+		return nil, err
 	}
 
-	// Parse target host/port
-	host, portStr, err := net.SplitHostPort(address)
+	conn, err := d.dialProxy(ctx, network)
 	if err != nil {
-		return nil, fmt.Errorf("invalid target address: %w", err)
-	}
-	port, err := parsePort(ctx, portStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid target port %q: %w", portStr, err)
-	}
-
-	// Connect to proxy
-	proxyConn, err := dialer.DialContext(ctx, network, d.ProxyAddr)
-	if err != nil {
-		return nil, fmt.Errorf("connect to proxy: %w", err)
+		return nil, err
 	}
 
 	// Close proxy connection on context cancellation
@@ -56,161 +48,163 @@ func (d *Dialer) DialContext(ctx context.Context, network string, address string
 	go func() {
 		select {
 		case <-ctx.Done():
-			proxyConn.Close()
+			conn.Close()
 		case <-exitCh:
 			return
 		}
 	}()
 
+	reply, err := d.doRequest(conn, CmdConnect, host, port)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	if !reply.IsGranted() {
+		conn.Close()
+		return nil, replyToError(reply.Code)
+	}
+
+	return conn, nil
+}
+
+// Dial establishes a connection via SOCKS4/4a proxy using background context.
+func (d *Dialer) Dial(network, address string) (net.Conn, error) {
+	return d.DialContext(context.Background(), network, address)
+}
+
+// BindContext establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).
+// It returns the active connection and the proxy’s bind address once ready.
+// BindContext establishes a passive BIND connection via SOCKS4 proxy.
+func (d *Dialer) BindContext(
+	ctx context.Context,
+	network, address string,
+) (net.Conn, *net.TCPAddr, <-chan error, error) {
+	host, port, err := splitHostPort(ctx, address)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	conn, err := d.dialProxy(ctx, network)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// Close proxy connection on context cancellation
+	exitCh := make(chan struct{})
+	defer close(exitCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-exitCh:
+			return
+		}
+	}()
+
+	reply, err := d.doRequest(conn, CmdBind, host, port)
+	if err != nil {
+		conn.Close()
+		return nil, nil, nil, err
+	}
+	if !reply.IsGranted() {
+		conn.Close()
+		return nil, nil, nil, replyToError(reply.Code)
+	}
+
+	bindAddr := &net.TCPAddr{
+		IP:   reply.GetIP(),
+		Port: int(reply.Port),
+	}
+
+	// Wait for second reply indicating incoming connection
+	readyCh := make(chan error, 1)
+	go func() {
+		defer close(readyCh)
+
+		reader := internal.GetReader(conn)
+		defer internal.PutReader(reader)
+
+		var resp2 Reply
+		if _, err := resp2.ReadFrom(reader); err != nil {
+			readyCh <- err
+			return
+		}
+		if !resp2.IsGranted() {
+			readyCh <- replyToError(resp2.Code)
+			return
+		}
+		readyCh <- nil
+	}()
+
+	return conn, bindAddr, readyCh, nil
+}
+
+// Bind establishes a passive BIND connection using background context.
+func (d *Dialer) Bind(network, address string) (net.Conn, *net.TCPAddr, <-chan error, error) {
+	return d.BindContext(context.Background(), network, address)
+}
+
+// dialProxy connects to the SOCKS4 proxy server.
+func (d *Dialer) dialProxy(ctx context.Context, network string) (net.Conn, error) {
+	dialer := d.Dialer
+	if dialer == nil {
+		dialer = socksnet.DefaultDialer
+	}
+	return dialer.DialContext(ctx, network, d.ProxyAddr)
+}
+
+// doRequest sends a SOCKS4 request and reads the reply.
+func (d *Dialer) doRequest(
+	conn net.Conn,
+	cmd byte,
+	host string,
+	port uint16,
+) (*Reply, error) {
 	// Build SOCKS4 request
 	var req Request
-	req.Init(SocksVersion, CmdConnect, port, net.ParseIP(host), d.UserID, "")
+	req.Init(SocksVersion, cmd, port, net.ParseIP(host), d.UserID, "")
 	if net.ParseIP(host) == nil {
 		// SOCKS4a fallback
 		copy(req.IP[:], []byte{0, 0, 0, 1})
 		req.Domain = host
 	}
 
-	// Send request using pooled writer
-	writer := internal.GetWriter(proxyConn)
+	writer := internal.GetWriter(conn)
 	defer internal.PutWriter(writer)
 
 	if _, err := req.WriteTo(writer); err != nil {
-		proxyConn.Close()
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, err
 	}
 	if err := writer.Flush(); err != nil {
-		proxyConn.Close()
-		return nil, fmt.Errorf("flush request: %w", err)
+		return nil, err
 	}
 
-	// Read response using pooled reader
-	reader := internal.GetReader(proxyConn)
+	reader := internal.GetReader(conn)
 	defer internal.PutReader(reader)
 
-	var resp Reply
-	if _, err := resp.ReadFrom(reader); err != nil {
-		proxyConn.Close()
-		return nil, fmt.Errorf("read response: %w", err)
+	var reply Reply
+	if _, err := reply.ReadFrom(reader); err != nil {
+		return nil, err
 	}
 
-	if !resp.IsGranted() {
-		proxyConn.Close()
-		return nil, fmt.Errorf("proxy rejected request (code 0x%02x)", resp.Code)
-	}
-
-	// Connection established
-	return proxyConn, nil
+	return &reply, nil
 }
 
-// Dial establishes a connection via SOCKS4/4a proxy (CMD_CONNECT).
-func (d *Dialer) Dial(network string, address string) (net.Conn, error) {
-	return d.DialContext(context.Background(), network, address)
-}
-
-// BindContext establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).
-// It returns the active connection and the proxy’s bind address once ready.
-func (d *Dialer) BindContext(ctx context.Context, network string, address string) (net.Conn, *net.TCPAddr, <-chan error, error) {
-	dialer := d.Dialer
-	if dialer == nil {
-		dialer = socksnet.DefaultDialer
-	}
-
-	// Parse target host:port
-	host, portStr, err := net.SplitHostPort(address)
+// splitHostPort parses address into host and port with context for DNS resolution.
+func splitHostPort(ctx context.Context, addr string) (string, uint16, error) {
+	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid target address: %w", err)
+		return "", 0, err
 	}
+
 	port, err := parsePort(ctx, portStr)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid target port %q: %w", portStr, err)
+		return "", 0, err
 	}
 
-	// Connect to proxy
-	proxyConn, err := dialer.DialContext(ctx, network, d.ProxyAddr)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("connect to proxy: %w", err)
-	}
-
-	// Close proxy connection on context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			proxyConn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
-
-	// Build SOCKS4 BIND request
-	var req Request
-	req.Init(SocksVersion, CmdBind, port, net.ParseIP(host), d.UserID, "")
-	if net.ParseIP(host) == nil {
-		copy(req.IP[:], []byte{0, 0, 0, 1})
-		req.Domain = host
-	}
-
-	// Send BIND request using pooled writer
-	writer := internal.GetWriter(proxyConn)
-	defer internal.PutWriter(writer)
-
-	if _, err := req.WriteTo(writer); err != nil {
-		proxyConn.Close()
-		return nil, nil, nil, fmt.Errorf("send BIND request: %w", err)
-	}
-	if err := writer.Flush(); err != nil {
-		proxyConn.Close()
-		return nil, nil, nil, fmt.Errorf("flush BIND request: %w", err)
-	}
-
-	// Read first response using pooled reader
-	reader := internal.GetReader(proxyConn)
-	defer internal.PutReader(reader)
-
-	var resp1 Reply
-	if _, err := resp1.ReadFrom(reader); err != nil {
-		proxyConn.Close()
-		return nil, nil, nil, fmt.Errorf("read first BIND response: %w", err)
-	}
-	if !resp1.IsGranted() {
-		proxyConn.Close()
-		return nil, nil, nil, fmt.Errorf("proxy rejected BIND setup (code 0x%02x)", resp1.Code)
-	}
-
-	bindAddr := &net.TCPAddr{
-		IP:   resp1.GetIP(),
-		Port: int(resp1.Port),
-	}
-
-	readyCh := make(chan error, 1)
-	go func() {
-		defer close(readyCh)
-
-		// Wait for second response using pooled reader
-		reader2 := internal.GetReader(proxyConn)
-		defer internal.PutReader(reader2)
-
-		var resp2 Reply
-		if _, err := resp2.ReadFrom(reader2); err != nil {
-			readyCh <- fmt.Errorf("read second BIND response: %w", err)
-		}
-		if !resp2.IsGranted() {
-			readyCh <- fmt.Errorf("proxy rejected BIND finalization (code 0x%02x)", resp2.Code)
-		}
-		readyCh <- nil
-	}()
-
-	// Connection established
-	return proxyConn, bindAddr, readyCh, nil
-}
-
-// Bind establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).
-// It returns the active connection and the proxy’s bind address once ready.
-func (d *Dialer) Bind(network string, address string) (net.Conn, *net.TCPAddr, <-chan error, error) {
-	return d.BindContext(context.Background(), network, address)
+	return host, port, nil
 }
 
 // parsePort converts a port string to uint16.
@@ -226,4 +220,18 @@ func parsePort(ctx context.Context, p string) (uint16, error) {
 		return 0, err
 	}
 	return uint16(n), nil
+}
+
+// replyToError converts a SOCKS4 reply code to an error.
+func replyToError(code byte) error {
+	switch code {
+	case RepRejected:
+		return fmt.Errorf("socks4: request rejected")
+	case RepIdentFailed:
+		return fmt.Errorf("socks4: failed to connect to identd")
+	case RepUserIDMismatch:
+		return fmt.Errorf("socks4: user ID does not match identd")
+	default:
+		return fmt.Errorf("socks4: unknown error (code 0x%02x)", code)
+	}
 }
