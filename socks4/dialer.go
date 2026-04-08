@@ -4,39 +4,36 @@ import (
 	"context"
 	"fmt"
 	"net"
+
+	"github.com/33TU/socks/internal"
+	socksnet "github.com/33TU/socks/net"
 )
-
-// DefaultDialer is the default underlying dialer, which uses net.Dialer.DialContext.
-var DefaultDialer = (&net.Dialer{}).DialContext
-
-// DialFunc is a function compatible with net.Dialer.DialContext.
-type DialFunc = func(ctx context.Context, network, address string) (net.Conn, error)
 
 // Dialer implements a SOCKS4/4a proxy dialer.
 type Dialer struct {
-	ProxyAddr string   // e.g. "127.0.0.1:1080"
-	UserID    string   // optional SOCKS4 user ID
-	DialFunc  DialFunc // optional underlying dialer (nil=DefaultDialer)
+	ProxyAddr string          // e.g. "127.0.0.1:1080"
+	UserID    string          // optional SOCKS4 user ID
+	Dialer    socksnet.Dialer // optional underlying dialer (nil=DefaultDialer)
 }
 
 // NewDialer creates a new SOCKS4 dialer instance.
-func NewDialer(proxyAddr, userID string, dialFunc DialFunc) *Dialer {
+func NewDialer(proxyAddr, userID string, dialer socksnet.Dialer) *Dialer {
 	return &Dialer{
 		ProxyAddr: proxyAddr,
 		UserID:    userID,
-		DialFunc:  dialFunc,
+		Dialer:    dialer,
 	}
 }
 
 // DialContext establishes a connection via SOCKS4/4a proxy (CMD_CONNECT).
 func (d *Dialer) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
-	dialFunc := d.DialFunc
-	if dialFunc == nil {
-		dialFunc = DefaultDialer
+	dialer := d.Dialer
+	if dialer == nil {
+		dialer = socksnet.DefaultDialer
 	}
 
 	// Connect to proxy
-	proxyConn, err := dialFunc(ctx, network, d.ProxyAddr)
+	proxyConn, err := dialer.DialContext(ctx, network, d.ProxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to proxy: %w", err)
 	}
@@ -75,15 +72,25 @@ func (d *Dialer) DialContext(ctx context.Context, network string, address string
 		req.Domain = host
 	}
 
-	// Send request
-	if _, err := req.WriteTo(proxyConn); err != nil {
+	// Send request using pooled writer
+	writer := internal.GetWriter(proxyConn)
+	defer internal.PutWriter(writer)
+
+	if _, err := req.WriteTo(writer); err != nil {
 		proxyConn.Close()
 		return nil, fmt.Errorf("send request: %w", err)
 	}
+	if err := writer.Flush(); err != nil {
+		proxyConn.Close()
+		return nil, fmt.Errorf("flush request: %w", err)
+	}
 
-	// Read response
+	// Read response using pooled reader
+	reader := internal.GetReader(proxyConn)
+	defer internal.PutReader(reader)
+
 	var resp Reply
-	if _, err := resp.ReadFrom(proxyConn); err != nil {
+	if _, err := resp.ReadFrom(reader); err != nil {
 		proxyConn.Close()
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -105,13 +112,13 @@ func (d *Dialer) Dial(network string, address string) (net.Conn, error) {
 // BindContext establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).
 // It returns the active connection and the proxy’s bind address once ready.
 func (d *Dialer) BindContext(ctx context.Context, network string, address string) (net.Conn, *net.TCPAddr, <-chan error, error) {
-	dialFunc := d.DialFunc
-	if dialFunc == nil {
-		dialFunc = DefaultDialer
+	dialer := d.Dialer
+	if dialer == nil {
+		dialer = socksnet.DefaultDialer
 	}
 
 	// Connect to proxy
-	proxyConn, err := dialFunc(ctx, network, d.ProxyAddr)
+	proxyConn, err := dialer.DialContext(ctx, network, d.ProxyAddr)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("connect to proxy: %w", err)
 	}
@@ -149,15 +156,25 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 		req.Domain = host
 	}
 
-	// Send BIND request
-	if _, err := req.WriteTo(proxyConn); err != nil {
+	// Send BIND request using pooled writer
+	writer := internal.GetWriter(proxyConn)
+	defer internal.PutWriter(writer)
+
+	if _, err := req.WriteTo(writer); err != nil {
 		proxyConn.Close()
 		return nil, nil, nil, fmt.Errorf("send BIND request: %w", err)
 	}
+	if err := writer.Flush(); err != nil {
+		proxyConn.Close()
+		return nil, nil, nil, fmt.Errorf("flush BIND request: %w", err)
+	}
 
-	// Read first response (proxy bind address)
+	// Read first response using pooled reader
+	reader := internal.GetReader(proxyConn)
+	defer internal.PutReader(reader)
+
 	var resp1 Reply
-	if _, err := resp1.ReadFrom(proxyConn); err != nil {
+	if _, err := resp1.ReadFrom(reader); err != nil {
 		proxyConn.Close()
 		return nil, nil, nil, fmt.Errorf("read first BIND response: %w", err)
 	}
@@ -175,9 +192,12 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 	go func() {
 		defer close(readyCh)
 
-		// Wait for second response (remote host connected)
+		// Wait for second response using pooled reader
+		reader2 := internal.GetReader(proxyConn)
+		defer internal.PutReader(reader2)
+
 		var resp2 Reply
-		if _, err := resp2.ReadFrom(proxyConn); err != nil {
+		if _, err := resp2.ReadFrom(reader2); err != nil {
 			readyCh <- fmt.Errorf("read second BIND response: %w", err)
 		}
 		if !resp2.IsGranted() {

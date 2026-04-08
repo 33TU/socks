@@ -60,6 +60,11 @@ func (r *Request) GetHost() string {
 	return r.GetIP().String()
 }
 
+// GetAddr returns the destination address in "host:port" format.
+func (r *Request) GetAddr() string {
+	return net.JoinHostPort(r.GetHost(), fmt.Sprintf("%d", r.Port))
+}
+
 // Init initializes a SOCKS4 or SOCKS4a CONNECT/BIND request.
 func (r *Request) Init(
 	version byte,
