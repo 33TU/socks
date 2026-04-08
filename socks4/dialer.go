@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 
 	"github.com/33TU/socks/internal"
 	socksnet "github.com/33TU/socks/net"
@@ -32,6 +33,16 @@ func (d *Dialer) DialContext(ctx context.Context, network string, address string
 		dialer = socksnet.DefaultDialer
 	}
 
+	// Parse target host/port
+	host, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target address: %w", err)
+	}
+	port, err := parsePort(ctx, portStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target port %q: %w", portStr, err)
+	}
+
 	// Connect to proxy
 	proxyConn, err := dialer.DialContext(ctx, network, d.ProxyAddr)
 	if err != nil {
@@ -50,18 +61,6 @@ func (d *Dialer) DialContext(ctx context.Context, network string, address string
 			return
 		}
 	}()
-
-	// Parse target host/port
-	host, portStr, err := net.SplitHostPort(address)
-	if err != nil {
-		proxyConn.Close()
-		return nil, fmt.Errorf("invalid target address: %w", err)
-	}
-	port, err := parsePort(portStr)
-	if err != nil {
-		proxyConn.Close()
-		return nil, fmt.Errorf("invalid target port %q: %w", portStr, err)
-	}
 
 	// Build SOCKS4 request
 	var req Request
@@ -117,6 +116,16 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 		dialer = socksnet.DefaultDialer
 	}
 
+	// Parse target host:port
+	host, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("invalid target address: %w", err)
+	}
+	port, err := parsePort(ctx, portStr)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("invalid target port %q: %w", portStr, err)
+	}
+
 	// Connect to proxy
 	proxyConn, err := dialer.DialContext(ctx, network, d.ProxyAddr)
 	if err != nil {
@@ -135,18 +144,6 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 			return
 		}
 	}()
-
-	// Parse target host:port
-	host, portStr, err := net.SplitHostPort(address)
-	if err != nil {
-		proxyConn.Close()
-		return nil, nil, nil, fmt.Errorf("invalid target address: %w", err)
-	}
-	port, err := parsePort(portStr)
-	if err != nil {
-		proxyConn.Close()
-		return nil, nil, nil, fmt.Errorf("invalid target port %q: %w", portStr, err)
-	}
 
 	// Build SOCKS4 BIND request
 	var req Request
@@ -217,8 +214,14 @@ func (d *Dialer) Bind(network string, address string) (net.Conn, *net.TCPAddr, <
 }
 
 // parsePort converts a port string to uint16.
-func parsePort(p string) (uint16, error) {
-	n, err := net.LookupPort("tcp", p)
+func parsePort(ctx context.Context, p string) (uint16, error) {
+	// Try parsing as number first (common case)
+	if n, err := strconv.ParseUint(p, 10, 16); err == nil {
+		return uint16(n), nil
+	}
+
+	// Fall back to name resolution
+	n, err := net.DefaultResolver.LookupPort(ctx, "tcp", p)
 	if err != nil {
 		return 0, err
 	}
