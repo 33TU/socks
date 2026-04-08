@@ -11,17 +11,34 @@ import (
 	socksnet "github.com/33TU/socks/net"
 )
 
+// GSSAPIContext interface for GSSAPI authentication operations.
+type GSSAPIContext interface {
+	// InitSecContext generates initial GSSAPI token
+	InitSecContext() ([]byte, error)
+	// AcceptSecContext processes server tokens and generates response
+	// Returns: (responseToken, authComplete, error)
+	AcceptSecContext(serverToken []byte) ([]byte, bool, error)
+	// IsComplete returns true when authentication is finished
+	IsComplete() bool
+}
+
 // Auth holds username/password credentials for SOCKS5 authentication.
 type Auth struct {
 	Username string
 	Password string
 }
 
+// GSSAPIAuth holds GSSAPI authentication context.
+type GSSAPIAuth struct {
+	Context GSSAPIContext
+}
+
 // Dialer implements a SOCKS5 proxy dialer.
 type Dialer struct {
-	ProxyAddr string
-	Auth      *Auth
-	Dialer    socksnet.Dialer
+	ProxyAddr  string
+	Auth       *Auth
+	GSSAPIAuth *GSSAPIAuth
+	Dialer     socksnet.Dialer
 }
 
 // NewDialer creates a new SOCKS5 dialer instance.
@@ -33,6 +50,19 @@ func NewDialer(proxyAddr string, auth *Auth, dialer socksnet.Dialer) *Dialer {
 		ProxyAddr: proxyAddr,
 		Auth:      auth,
 		Dialer:    dialer,
+	}
+}
+
+// NewDialerWithGSSAPI creates a new SOCKS5 dialer instance with GSSAPI support.
+func NewDialerWithGSSAPI(proxyAddr string, auth *Auth, gssapiAuth *GSSAPIAuth, dialer socksnet.Dialer) *Dialer {
+	if dialer == nil {
+		dialer = socksnet.DefaultDialer
+	}
+	return &Dialer{
+		ProxyAddr:  proxyAddr,
+		Auth:       auth,
+		GSSAPIAuth: gssapiAuth,
+		Dialer:     dialer,
 	}
 }
 
@@ -259,6 +289,10 @@ func (d *Dialer) handshake(conn net.Conn) error {
 		methods = append(methods, MethodUserPass)
 	}
 
+	if d.GSSAPIAuth != nil {
+		methods = append(methods, MethodGSSAPI)
+	}
+
 	var req HandshakeRequest
 	req.Init(SocksVersion, methods...)
 
@@ -289,6 +323,12 @@ func (d *Dialer) handshake(conn net.Conn) error {
 			return errors.New("socks5: server requires authentication")
 		}
 		return d.authUserPass(conn)
+
+	case MethodGSSAPI:
+		if d.GSSAPIAuth == nil {
+			return errors.New("socks5: server requires GSSAPI authentication")
+		}
+		return d.authGSSAPI(conn)
 
 	default:
 		return errors.New("socks5: no acceptable authentication method")
@@ -323,6 +363,84 @@ func (d *Dialer) authUserPass(conn net.Conn) error {
 
 	if reply.Status != 0 {
 		return errors.New("socks5: authentication failed")
+	}
+
+	return nil
+}
+
+// authGSSAPI performs SOCKS5 GSSAPI authentication exchange.
+func (d *Dialer) authGSSAPI(conn net.Conn) error {
+	// Get initial token from GSSAPI context
+	initialToken, err := d.GSSAPIAuth.Context.InitSecContext()
+	if err != nil {
+		return fmt.Errorf("socks5: failed to initialize GSSAPI context: %w", err)
+	}
+
+	// Send initial GSSAPI request
+	req := GSSAPIRequest{
+		Version: GSSAPIVersion,
+		MsgType: GSSAPITypeInit,
+		Token:   initialToken,
+	}
+
+	writer := internal.GetWriter(conn)
+	defer internal.PutWriter(writer)
+
+	if _, err := req.WriteTo(writer); err != nil {
+		return err
+	}
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+
+	reader := internal.GetReader(conn)
+	defer internal.PutReader(reader)
+
+	// GSSAPI may require multiple round trips
+	for !d.GSSAPIAuth.Context.IsComplete() {
+		var reply GSSAPIReply
+		if _, err := reply.ReadFrom(reader); err != nil {
+			return err
+		}
+
+		if reply.Version != GSSAPIVersion {
+			return errors.New("socks5: invalid GSSAPI version in reply")
+		}
+
+		switch reply.MsgType {
+		case GSSAPITypeReply:
+			// Process server token and get next client token
+			nextToken, complete, err := d.GSSAPIAuth.Context.AcceptSecContext(reply.Token)
+			if err != nil {
+				return fmt.Errorf("socks5: GSSAPI context error: %w", err)
+			}
+
+			if complete {
+				return nil // Authentication successful
+			}
+
+			// Send continuation token if available
+			if len(nextToken) > 0 {
+				contReq := GSSAPIRequest{
+					Version: GSSAPIVersion,
+					MsgType: GSSAPITypeInit,
+					Token:   nextToken,
+				}
+
+				if _, err := contReq.WriteTo(writer); err != nil {
+					return err
+				}
+				if err := writer.Flush(); err != nil {
+					return err
+				}
+			}
+
+		case GSSAPITypeAbort:
+			return errors.New("socks5: GSSAPI authentication aborted by server")
+
+		default:
+			return fmt.Errorf("socks5: unknown GSSAPI message type: %d", reply.MsgType)
+		}
 	}
 
 	return nil
