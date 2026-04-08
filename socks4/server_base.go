@@ -6,8 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	socksnet "github.com/33TU/socks/net"
 )
@@ -120,26 +121,26 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 		bufSize = 1024 * 32
 	}
 
-	// Start bidirectional copying
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// Start bidirectional copying with coordinated error handling
+	g, ctx := errgroup.WithContext(ctx)
 
-	go func() {
-		defer wg.Done()
+	g.Go(func() error {
 		if err := socksnet.CopyConn(incomingConn, conn, d.BindConnTimeout, bufSize); err != nil && err != io.EOF {
 			slog.ErrorContext(ctx, "error copying from client to incoming", "error", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
-	go func() {
-		defer wg.Done()
+	g.Go(func() error {
 		if err := socksnet.CopyConn(conn, incomingConn, d.BindConnTimeout, bufSize); err != nil && err != io.EOF {
 			slog.ErrorContext(ctx, "error copying from incoming to client", "error", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
-	wg.Wait()
-	return nil
+	return g.Wait()
 }
 
 func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *Request) error {
@@ -182,26 +183,26 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 		bufSize = 1024 * 32
 	}
 
-	// Start bidirectional copying
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// Start bidirectional copying with coordinated error handling
+	g, ctx := errgroup.WithContext(ctx)
 
-	go func() {
-		defer wg.Done()
+	g.Go(func() error {
 		if err := socksnet.CopyConn(remote, conn, d.ConnectConnTimeout, bufSize); err != nil && err != io.EOF {
 			slog.ErrorContext(ctx, "error copying from client to remote", "error", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
-	go func() {
-		defer wg.Done()
+	g.Go(func() error {
 		if err := socksnet.CopyConn(conn, remote, d.ConnectConnTimeout, bufSize); err != nil && err != io.EOF {
 			slog.ErrorContext(ctx, "error copying from remote to client", "error", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
-	wg.Wait()
-	return nil
+	return g.Wait()
 }
 
 func (d *BaseServerHandler) OnError(ctx context.Context, conn net.Conn, err error) {
