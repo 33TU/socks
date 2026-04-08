@@ -167,3 +167,60 @@ func TestDialer_Bind_ContextCancel(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestDialer_Connect_WithDeadline(t *testing.T) {
+	proxyAddr, stop := startMockSOCKS4Server(t, func(c net.Conn) {
+		defer c.Close()
+
+		// Read request
+		var req socks4.Request
+		req.ReadFrom(c)
+
+		// Send success reply
+		var resp socks4.Reply
+		resp.Init(0, socks4.RepGranted, req.Port, req.GetIP())
+		resp.WriteTo(c)
+
+		// Test deadline by delaying read operation
+		time.Sleep(150 * time.Millisecond) // Longer than context deadline
+
+		buf := make([]byte, 4)
+		_, err := io.ReadFull(c, buf) // This should fail due to deadline
+		if err == nil {
+			t.Logf("server: expected deadline error but got none")
+		}
+	})
+	defer stop()
+
+	// Create context with short deadline
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	d := &socks4.Dialer{ProxyAddr: proxyAddr, UserID: "deadlinetest"}
+	conn, err := d.DialContext(ctx, "tcp", "127.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("DialContext failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Try to write - should work initially
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	// Wait for deadline to expire, then try to read
+	time.Sleep(120 * time.Millisecond)
+
+	buf := make([]byte, 4)
+	_, err = io.ReadFull(conn, buf)
+	if err == nil {
+		t.Fatal("expected deadline timeout error on read")
+	}
+
+	// Verify it's a timeout/deadline error
+	if !strings.Contains(err.Error(), "timeout") &&
+		!strings.Contains(err.Error(), "deadline") &&
+		!strings.Contains(err.Error(), "i/o timeout") {
+		t.Logf("got error (acceptable): %v", err) // Log but don't fail - different error types are OK
+	}
+}

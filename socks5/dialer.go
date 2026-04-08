@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/33TU/socks/internal"
 	socksnet "github.com/33TU/socks/net"
@@ -78,18 +79,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		return nil, err
 	}
 
-	// Close proxy connection on context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// Set connection deadline from context if available
+	deadline, ok := ctx.Deadline()
+	if ok {
+		conn.SetDeadline(deadline)
+	}
 
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
@@ -105,6 +99,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if reply.Reply != RepSuccess {
 		conn.Close()
 		return nil, replyToError(reply.Reply)
+	}
+
+	// Reset deadline after successful SOCKS negotiation
+	if ok {
+		conn.SetDeadline(time.Time{})
 	}
 
 	return conn, nil
@@ -131,18 +130,11 @@ func (d *Dialer) BindContext(
 		return nil, nil, nil, err
 	}
 
-	// Close proxy connection on context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// Set connection deadline from context if available
+	deadline, ok := ctx.Deadline()
+	if ok {
+		conn.SetDeadline(deadline)
+	}
 
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
@@ -158,6 +150,11 @@ func (d *Dialer) BindContext(
 	if reply.Reply != RepSuccess {
 		conn.Close()
 		return nil, nil, nil, replyToError(reply.Reply)
+	}
+
+	// Reset deadline after successful SOCKS negotiation
+	if ok {
+		conn.SetDeadline(time.Time{})
 	}
 
 	addr := replyToTCPAddr(reply)
@@ -205,18 +202,11 @@ func (d *Dialer) UDPAssociateContext(
 		return nil, nil, err
 	}
 
-	// Close proxy connection on context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// Set connection deadline from context if available
+	deadline, ok := ctx.Deadline()
+	if ok {
+		conn.SetDeadline(deadline)
+	}
 
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
@@ -242,6 +232,11 @@ func (d *Dialer) UDPAssociateContext(
 		return nil, nil, replyToError(reply.Reply)
 	}
 
+	// Reset deadline after successful SOCKS negotiation
+	if ok {
+		conn.SetDeadline(time.Time{})
+	}
+
 	udpAddr := replyToUDPAddr(reply)
 
 	return conn, udpAddr, nil
@@ -260,6 +255,12 @@ func (d *Dialer) ResolveContext(ctx context.Context, network, host string) (net.
 	}
 	defer conn.Close()
 
+	// Set connection deadline from context if available
+	deadline, ok := ctx.Deadline()
+	if ok {
+		conn.SetDeadline(deadline)
+	}
+
 	if err := d.handshake(conn); err != nil {
 		return nil, err
 	}
@@ -271,6 +272,11 @@ func (d *Dialer) ResolveContext(ctx context.Context, network, host string) (net.
 
 	if reply.Reply != RepSuccess {
 		return nil, replyToError(reply.Reply)
+	}
+
+	// Reset deadline after successful SOCKS negotiation
+	if ok {
+		conn.SetDeadline(time.Time{})
 	}
 
 	return reply.IP, nil

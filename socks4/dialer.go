@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/33TU/socks/internal"
 	socksnet "github.com/33TU/socks/net"
@@ -41,18 +42,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		return nil, err
 	}
 
-	// Close proxy connection on context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// Set connection deadline from context if available
+	deadline, ok := ctx.Deadline()
+	if ok {
+		conn.SetDeadline(deadline)
+	}
 
 	reply, err := d.doRequest(conn, CmdConnect, host, port)
 	if err != nil {
@@ -63,6 +57,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if !reply.IsGranted() {
 		conn.Close()
 		return nil, replyToError(reply.Code)
+	}
+
+	// Reset deadline after successful SOCKS negotiation
+	if ok {
+		conn.SetDeadline(time.Time{})
 	}
 
 	return conn, nil
@@ -90,18 +89,11 @@ func (d *Dialer) BindContext(
 		return nil, nil, nil, err
 	}
 
-	// Close proxy connection on context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// Set connection deadline from context if available
+	deadline, ok := ctx.Deadline()
+	if ok {
+		conn.SetDeadline(deadline)
+	}
 
 	reply, err := d.doRequest(conn, CmdBind, host, port)
 	if err != nil {
@@ -111,6 +103,11 @@ func (d *Dialer) BindContext(
 	if !reply.IsGranted() {
 		conn.Close()
 		return nil, nil, nil, replyToError(reply.Code)
+	}
+
+	// Reset deadline after successful SOCKS negotiation
+	if ok {
+		conn.SetDeadline(time.Time{})
 	}
 
 	bindAddr := &net.TCPAddr{
