@@ -3,7 +3,6 @@ package socks4
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"time"
@@ -125,7 +124,7 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 	g, ctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		if err := socksnet.CopyConn(incomingConn, conn, d.BindConnTimeout, bufSize); err != nil && err != io.EOF {
+		if err := socksnet.CopyConn(incomingConn, conn, d.BindConnTimeout, bufSize); err != nil {
 			slog.ErrorContext(ctx, "error copying from client to incoming", "error", err)
 			return err
 		}
@@ -133,7 +132,7 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 	})
 
 	g.Go(func() error {
-		if err := socksnet.CopyConn(conn, incomingConn, d.BindConnTimeout, bufSize); err != nil && err != io.EOF {
+		if err := socksnet.CopyConn(conn, incomingConn, d.BindConnTimeout, bufSize); err != nil {
 			slog.ErrorContext(ctx, "error copying from incoming to client", "error", err)
 			return err
 		}
@@ -187,7 +186,7 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	g, ctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		if err := socksnet.CopyConn(remote, conn, d.ConnectConnTimeout, bufSize); err != nil && err != io.EOF {
+		if err := socksnet.CopyConn(remote, conn, d.ConnectConnTimeout, bufSize); err != nil {
 			slog.ErrorContext(ctx, "error copying from client to remote", "error", err)
 			return err
 		}
@@ -195,7 +194,7 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	})
 
 	g.Go(func() error {
-		if err := socksnet.CopyConn(conn, remote, d.ConnectConnTimeout, bufSize); err != nil && err != io.EOF {
+		if err := socksnet.CopyConn(conn, remote, d.ConnectConnTimeout, bufSize); err != nil {
 			slog.ErrorContext(ctx, "error copying from remote to client", "error", err)
 			return err
 		}
