@@ -118,7 +118,7 @@ func TestDialerAndServer_Bind_Success(t *testing.T) {
 			defer bindLn.Close()
 
 			addr := bindLn.Addr().(*net.TCPAddr)
-			resp1 := socks4.Response{}
+			resp1 := socks4.Reply{}
 			resp1.Init(0, socks4.RepGranted, uint16(addr.Port), net.ParseIP("127.0.0.1"))
 			resp1.WriteTo(conn)
 
@@ -129,7 +129,7 @@ func TestDialerAndServer_Bind_Success(t *testing.T) {
 			}
 			defer peer.Close()
 
-			resp2 := socks4.Response{}
+			resp2 := socks4.Reply{}
 			resp2.Init(0, socks4.RepGranted, uint16(addr.Port), net.ParseIP("127.0.0.1"))
 			resp2.WriteTo(conn)
 

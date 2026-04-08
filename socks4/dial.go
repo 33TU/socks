@@ -82,7 +82,7 @@ func (d *Dialer) DialContext(ctx context.Context, network string, address string
 	}
 
 	// Read response
-	var resp Response
+	var resp Reply
 	if _, err := resp.ReadFrom(proxyConn); err != nil {
 		proxyConn.Close()
 		return nil, fmt.Errorf("read response: %w", err)
@@ -156,7 +156,7 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 	}
 
 	// Read first response (proxy bind address)
-	var resp1 Response
+	var resp1 Reply
 	if _, err := resp1.ReadFrom(proxyConn); err != nil {
 		proxyConn.Close()
 		return nil, nil, nil, fmt.Errorf("read first BIND response: %w", err)
@@ -176,7 +176,7 @@ func (d *Dialer) BindContext(ctx context.Context, network string, address string
 		defer close(readyCh)
 
 		// Wait for second response (remote host connected)
-		var resp2 Response
+		var resp2 Reply
 		if _, err := resp2.ReadFrom(proxyConn); err != nil {
 			readyCh <- fmt.Errorf("read second BIND response: %w", err)
 		}
