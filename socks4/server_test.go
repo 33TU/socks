@@ -199,7 +199,7 @@ func TestBaseServerHandler_OnBind_Success(t *testing.T) {
 	// Test data that will flow through the proxy
 	testData := genRandom(16 * 1024) // 16KB test
 	var incomingData []byte
-	var err1, err2 error
+	var err1 error
 
 	// Connect to the bound address from another goroutine
 	var wg sync.WaitGroup
@@ -255,9 +255,6 @@ func TestBaseServerHandler_OnBind_Success(t *testing.T) {
 	if err1 != nil {
 		t.Fatalf("Error in incoming connection: %v", err1)
 	}
-	if err2 != nil {
-		t.Fatalf("Error in response: %v", err2)
-	}
 
 	// Verify data was correctly transmitted through the proxy
 	if !bytes.Equal(testData, incomingData) {
@@ -298,4 +295,161 @@ func TestBaseServerHandler_OnBind_Disabled(t *testing.T) {
 
 	t.Logf("BIND correctly rejected: %v", err)
 	t.Log("BIND disabled test passed")
+}
+
+func TestBaseServerHandler_UserIDValidation(t *testing.T) {
+	// Start an echo server
+	echoLn := echoServer(t)
+	defer echoLn.Close()
+
+	tests := []struct {
+		name          string
+		userIDChecker func(userID string) bool
+		connectUserID string
+		expectSuccess bool
+	}{
+		{
+			name:          "No validation - allow all",
+			userIDChecker: nil,
+			connectUserID: "anyuser",
+			expectSuccess: true,
+		},
+		{
+			name:          "No validation - allow empty",
+			userIDChecker: nil,
+			connectUserID: "",
+			expectSuccess: true,
+		},
+		{
+			name: "Allow specific user - match",
+			userIDChecker: func(userID string) bool {
+				return userID == "alice"
+			},
+			connectUserID: "alice",
+			expectSuccess: true,
+		},
+		{
+			name: "Allow specific user - no match",
+			userIDChecker: func(userID string) bool {
+				return userID == "alice"
+			},
+			connectUserID: "bob",
+			expectSuccess: false,
+		},
+		{
+			name: "Require non-empty - with user",
+			userIDChecker: func(userID string) bool {
+				return userID != ""
+			},
+			connectUserID: "someuser",
+			expectSuccess: true,
+		},
+		{
+			name: "Require non-empty - empty user",
+			userIDChecker: func(userID string) bool {
+				return userID != ""
+			},
+			connectUserID: "",
+			expectSuccess: false,
+		},
+		{
+			name: "Allow multiple users - match first",
+			userIDChecker: func(userID string) bool {
+				allowed := []string{"alice", "bob", "charlie"}
+				for _, id := range allowed {
+					if id == userID {
+						return true
+					}
+				}
+				return false
+			},
+			connectUserID: "alice",
+			expectSuccess: true,
+		},
+		{
+			name: "Allow multiple users - match last",
+			userIDChecker: func(userID string) bool {
+				allowed := []string{"alice", "bob", "charlie"}
+				for _, id := range allowed {
+					if id == userID {
+						return true
+					}
+				}
+				return false
+			},
+			connectUserID: "charlie",
+			expectSuccess: true,
+		},
+		{
+			name: "Allow multiple users - no match",
+			userIDChecker: func(userID string) bool {
+				allowed := []string{"alice", "bob", "charlie"}
+				for _, id := range allowed {
+					if id == userID {
+						return true
+					}
+				}
+				return false
+			},
+			connectUserID: "eve",
+			expectSuccess: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create handler with user ID validation
+			handler := &BaseServerHandler{
+				RequestTimeout: 2 * time.Second,
+				AllowConnect:   true,
+				AllowBind:      false,
+				UserIDChecker:  tt.userIDChecker,
+			}
+
+			// Start SOCKS4 server
+			socksLn := startSOCKS4Server(t, handler)
+			defer socksLn.Close()
+
+			// Create SOCKS4 dialer with the test user ID
+			dialer := NewDialer(socksLn.Addr().String(), tt.connectUserID, nil)
+
+			// Try to connect through the proxy
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			conn, err := dialer.DialContext(ctx, "tcp", echoLn.Addr().String())
+
+			if tt.expectSuccess {
+				if err != nil {
+					t.Fatalf("Expected connection to succeed but got error: %v", err)
+				}
+				defer conn.Close()
+
+				// Test that the connection actually works
+				testData := []byte("hello user validation")
+				_, err = conn.Write(testData)
+				if err != nil {
+					t.Fatalf("Failed to write test data: %v", err)
+				}
+
+				response := make([]byte, len(testData))
+				_, err = io.ReadFull(conn, response)
+				if err != nil {
+					t.Fatalf("Failed to read response: %v", err)
+				}
+
+				if !bytes.Equal(testData, response) {
+					t.Fatalf("Echo response mismatch: got %q, expected %q", response, testData)
+				}
+
+				t.Logf("Connection succeeded and data echoed correctly for user %q", tt.connectUserID)
+			} else {
+				if err == nil {
+					conn.Close()
+					t.Fatalf("Expected connection to fail but it succeeded for user %q", tt.connectUserID)
+				}
+				t.Logf("Connection correctly rejected for user %q: %v", tt.connectUserID, err)
+			}
+		})
+	}
 }

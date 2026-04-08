@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,8 @@ type Config struct {
 	AllowConnect       bool
 	AllowBind          bool
 	LogLevel           string
+	AllowedUserIDs     string
+	RequireUserID      bool
 }
 
 func parseFlags() *Config {
@@ -40,6 +43,8 @@ func parseFlags() *Config {
 	flag.BoolVar(&config.AllowConnect, "allow-connect", true, "Allow CONNECT requests")
 	flag.BoolVar(&config.AllowBind, "allow-bind", false, "Allow BIND requests")
 	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	flag.StringVar(&config.AllowedUserIDs, "allowed-userids", "", "Comma-separated list of allowed user IDs (empty = allow all)")
+	flag.BoolVar(&config.RequireUserID, "require-userid", false, "Require non-empty user ID")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
@@ -50,6 +55,8 @@ func parseFlags() *Config {
 		fmt.Fprintf(os.Stderr, "  %s -listen :1080\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s -listen 127.0.0.1:9999 -allow-bind\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s -listen 0.0.0.0:1080 -log-level debug\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -allowed-userids alice,bob -require-userid\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -require-userid (require non-empty user ID)\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -80,6 +87,35 @@ func setupLogging(level string) {
 	slog.SetDefault(logger)
 }
 
+// createUserIDChecker creates a user ID validation function based on configuration
+func createUserIDChecker(config *Config) func(userID string) bool {
+	// If no validation is required, return nil (allow all)
+	if !config.RequireUserID && config.AllowedUserIDs == "" {
+		return nil
+	}
+
+	return func(userID string) bool {
+		// Check if user ID is required but empty
+		if config.RequireUserID && userID == "" {
+			return false
+		}
+
+		// If no specific allowed user IDs, but we require non-empty, accept any non-empty
+		if config.AllowedUserIDs == "" {
+			return true
+		}
+
+		// Check against allowed user IDs list
+		allowedIDs := strings.Split(config.AllowedUserIDs, ",")
+		for _, allowedID := range allowedIDs {
+			if strings.TrimSpace(allowedID) == userID {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 func main() {
 	config := parseFlags()
 
@@ -103,12 +139,15 @@ func main() {
 		ConnectBufferSize:  config.ConnectBufferSize,
 		AllowConnect:       config.AllowConnect,
 		AllowBind:          config.AllowBind,
+		UserIDChecker:      createUserIDChecker(config),
 	}
 
 	slog.Info("Starting SOCKS4 server",
 		"listen", config.Listen,
 		"allow_connect", config.AllowConnect,
 		"allow_bind", config.AllowBind,
+		"require_userid", config.RequireUserID,
+		"allowed_userids", config.AllowedUserIDs,
 		"request_timeout", config.RequestTimeout,
 		"bind_accept_timeout", config.BindAcceptTimeout,
 		"bind_conn_timeout", config.BindConnTimeout,

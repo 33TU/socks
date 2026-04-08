@@ -56,6 +56,8 @@ type BaseServerHandler struct {
 	ConnectBufferSize  int
 	AllowConnect       bool
 	AllowBind          bool
+
+	UserIDChecker func(userID string) bool // Optional user ID validation function
 }
 
 func (d *BaseServerHandler) OnAccept(ctx context.Context, conn net.Conn) error {
@@ -245,6 +247,14 @@ func (d *BaseServerHandler) OnPanic(ctx context.Context, conn net.Conn, r any) {
 
 func (d *BaseServerHandler) OnRequest(ctx context.Context, conn net.Conn, req *Request) error {
 	slog.InfoContext(ctx, "received request", "from", conn.RemoteAddr(), "request", req)
+
+	// Check user ID if validator is provided
+	if d.UserIDChecker != nil && !d.UserIDChecker(req.UserID) {
+		var resp Reply
+		resp.Init(0, RepRejected, 0, net.IPv4zero)
+		resp.WriteTo(conn)
+		return fmt.Errorf("user ID not allowed: %q", req.UserID)
+	}
 
 	switch req.Command {
 	case CmdConnect:
