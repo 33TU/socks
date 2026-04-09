@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -302,9 +303,11 @@ func TestBaseServerHandler_UserIDValidation(t *testing.T) {
 	echoLn := echoServer(t)
 	defer echoLn.Close()
 
+	errUnauthorized := fmt.Errorf("user ID not allowed")
+
 	tests := []struct {
 		name          string
-		userIDChecker func(userID string) bool
+		userIDChecker func(ctx context.Context, userID string) error
 		connectUserID string
 		expectSuccess bool
 	}{
@@ -322,74 +325,86 @@ func TestBaseServerHandler_UserIDValidation(t *testing.T) {
 		},
 		{
 			name: "Allow specific user - match",
-			userIDChecker: func(userID string) bool {
-				return userID == "alice"
+			userIDChecker: func(ctx context.Context, userID string) error {
+				if userID == "alice" {
+					return nil
+				}
+				return errUnauthorized
 			},
 			connectUserID: "alice",
 			expectSuccess: true,
 		},
 		{
 			name: "Allow specific user - no match",
-			userIDChecker: func(userID string) bool {
-				return userID == "alice"
+			userIDChecker: func(ctx context.Context, userID string) error {
+				if userID == "alice" {
+					return nil
+				}
+				return errUnauthorized
 			},
 			connectUserID: "bob",
 			expectSuccess: false,
 		},
 		{
 			name: "Require non-empty - with user",
-			userIDChecker: func(userID string) bool {
-				return userID != ""
+			userIDChecker: func(ctx context.Context, userID string) error {
+				if userID != "" {
+					return nil
+				}
+				return errUnauthorized
 			},
 			connectUserID: "someuser",
 			expectSuccess: true,
 		},
 		{
 			name: "Require non-empty - empty user",
-			userIDChecker: func(userID string) bool {
-				return userID != ""
+			userIDChecker: func(ctx context.Context, userID string) error {
+				if userID != "" {
+					return nil
+				}
+				return errUnauthorized
 			},
 			connectUserID: "",
 			expectSuccess: false,
 		},
 		{
 			name: "Allow multiple users - match first",
-			userIDChecker: func(userID string) bool {
+			userIDChecker: func(ctx context.Context, userID string) error {
 				allowed := []string{"alice", "bob", "charlie"}
 				for _, id := range allowed {
 					if id == userID {
-						return true
+						return nil
 					}
 				}
-				return false
+				return errUnauthorized
 			},
 			connectUserID: "alice",
 			expectSuccess: true,
 		},
 		{
 			name: "Allow multiple users - match last",
-			userIDChecker: func(userID string) bool {
+			userIDChecker: func(ctx context.Context, userID string) error {
 				allowed := []string{"alice", "bob", "charlie"}
 				for _, id := range allowed {
 					if id == userID {
-						return true
+						return nil
 					}
 				}
-				return false
+				return errUnauthorized
 			},
 			connectUserID: "charlie",
 			expectSuccess: true,
 		},
 		{
 			name: "Allow multiple users - no match",
-			userIDChecker: func(userID string) bool {
+			userIDChecker: func(ctx context.Context, userID string) error {
 				allowed := []string{"alice", "bob", "charlie"}
 				for _, id := range allowed {
 					if id == userID {
-						return true
+						return nil
 					}
 				}
-				return false
+				return errUnauthorized
 			},
 			connectUserID: "eve",
 			expectSuccess: false,

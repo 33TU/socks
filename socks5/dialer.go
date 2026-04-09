@@ -313,11 +313,8 @@ func (d *Dialer) handshake(conn net.Conn) error {
 
 // authUserPass performs SOCKS5 username/password authentication.
 func (d *Dialer) authUserPass(conn net.Conn) error {
-	req := UserPassRequest{
-		Version:  1,
-		Username: d.Auth.Username,
-		Password: d.Auth.Password,
-	}
+	var req UserPassRequest
+	req.Init(AuthVersionUserPass, d.Auth.Username, d.Auth.Password)
 
 	writer := internal.GetWriter(conn)
 	defer internal.PutWriter(writer)

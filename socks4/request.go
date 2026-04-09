@@ -47,22 +47,22 @@ func (r *Request) IsSOCKS4() bool {
 			ip[3] != 0)
 }
 
-// GetIP returns the destination IPv4 address.
-func (r *Request) GetIP() net.IP {
+// IPv4 returns the destination IPv4 address.
+func (r *Request) IPv4() net.IP {
 	return net.IP(r.IP[:]).To4()
 }
 
-// GetHost returns the destination host.
-func (r *Request) GetHost() string {
+// Host returns the destination host.
+func (r *Request) Host() string {
 	if r.IsSOCKS4a() {
 		return r.Domain
 	}
-	return r.GetIP().String()
+	return r.IPv4().String()
 }
 
-// GetAddr returns the destination address in "host:port" format.
-func (r *Request) GetAddr() string {
-	return net.JoinHostPort(r.GetHost(), fmt.Sprintf("%d", r.Port))
+// Addr returns the destination address in "host:port" format.
+func (r *Request) Addr() string {
+	return net.JoinHostPort(r.Host(), fmt.Sprintf("%d", r.Port))
 }
 
 // Init initializes a SOCKS4 or SOCKS4a CONNECT/BIND request.
@@ -273,6 +273,6 @@ func (r *Request) String() string {
 
 	return fmt.Sprintf(
 		"SOCKS4 Request{Cmd=%s, IP=%s, Port=%d, UserID=%q, Version=%d}",
-		cmd, r.GetIP(), r.Port, r.UserID, r.Version,
+		cmd, r.IPv4(), r.Port, r.UserID, r.Version,
 	)
 }

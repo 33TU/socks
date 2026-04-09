@@ -2,6 +2,7 @@ package socks4
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"time"
 
@@ -24,6 +25,9 @@ var DefaultServerHandler ServerHandler = &BaseServerHandler{
 type ServerHandler interface {
 	// OnAccept is called for each accepted connection.
 	OnAccept(ctx context.Context, conn net.Conn) error
+
+	// OnUserID is called to validate the user ID from the SOCKS4 request.
+	OnUserID(ctx context.Context, conn net.Conn, userID string, hasUserID bool) error
 
 	// OnRequest is called for each request.
 	OnRequest(ctx context.Context, conn net.Conn, req *Request) error
@@ -104,9 +108,23 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		return
 	}
 
+	// Validate user ID
+	if err := handler.OnUserID(ctx, conn, req.UserID, len(req.UserID) > 0); err != nil {
+		writeReject(conn, RepRejected)
+		handler.OnError(ctx, conn, fmt.Errorf("user ID validation failed: %w", err))
+		return
+	}
+
 	// Handle the request
 	if err := handler.OnRequest(ctx, conn, &req); err != nil {
 		handler.OnError(ctx, conn, err)
 		return
 	}
+}
+
+// writeReject sends a SOCKS4 reply with the given rejection code.
+func writeReject(conn net.Conn, code byte) {
+	var resp Reply
+	resp.Init(0, code, 0, net.IPv4zero)
+	resp.WriteTo(conn)
 }

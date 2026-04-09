@@ -78,12 +78,12 @@ func Test_Request_WriteTo_ReadFrom_SOCKS4a(t *testing.T) {
 
 func Test_Request_GetHost(t *testing.T) {
 	r := socks4.Request{IP: ip4(127, 0, 0, 1)}
-	if got := r.GetHost(); got != "127.0.0.1" {
+	if got := r.Host(); got != "127.0.0.1" {
 		t.Errorf("expected 127.0.0.1, got %s", got)
 	}
 
 	r = socks4.Request{IP: ip4(0, 0, 0, 1), Domain: "example.com"}
-	if got := r.GetHost(); got != "example.com" {
+	if got := r.Host(); got != "example.com" {
 		t.Errorf("expected example.com, got %s", got)
 	}
 }

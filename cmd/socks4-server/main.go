@@ -88,31 +88,33 @@ func setupLogging(level string) {
 }
 
 // createUserIDChecker creates a user ID validation function based on configuration
-func createUserIDChecker(config *Config) func(userID string) bool {
+func createUserIDChecker(config *Config) func(ctx context.Context, userID string) error {
 	// If no validation is required, return nil (allow all)
 	if !config.RequireUserID && config.AllowedUserIDs == "" {
 		return nil
 	}
 
-	return func(userID string) bool {
+	errUnauthorized := fmt.Errorf("user ID not allowed")
+
+	return func(ctx context.Context, userID string) error {
 		// Check if user ID is required but empty
 		if config.RequireUserID && userID == "" {
-			return false
+			return errUnauthorized
 		}
 
 		// If no specific allowed user IDs, but we require non-empty, accept any non-empty
 		if config.AllowedUserIDs == "" {
-			return true
+			return nil
 		}
 
 		// Check against allowed user IDs list
 		allowedIDs := strings.Split(config.AllowedUserIDs, ",")
 		for _, allowedID := range allowedIDs {
 			if strings.TrimSpace(allowedID) == userID {
-				return true
+				return nil
 			}
 		}
-		return false
+		return errUnauthorized
 	}
 }
 

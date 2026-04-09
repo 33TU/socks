@@ -44,7 +44,7 @@ func TestDialer_Connect_Success(t *testing.T) {
 		}
 
 		var resp socks4.Reply
-		resp.Init(0, socks4.RepGranted, req.Port, req.GetIP())
+		resp.Init(0, socks4.RepGranted, req.Port, req.IPv4())
 		resp.WriteTo(c)
 
 		// Echo test
@@ -178,7 +178,7 @@ func TestDialer_Connect_WithDeadline(t *testing.T) {
 
 		// Send success reply
 		var resp socks4.Reply
-		resp.Init(0, socks4.RepGranted, req.Port, req.GetIP())
+		resp.Init(0, socks4.RepGranted, req.Port, req.IPv4())
 		resp.WriteTo(c)
 
 		// Test deadline by delaying read operation

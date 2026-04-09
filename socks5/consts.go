@@ -58,3 +58,15 @@ const (
 const (
 	GSSAPIVersion = 1
 )
+
+// Username/password authentication status codes.
+const (
+	UserPassStatusSuccess = 0x00
+	UserPassStatusFailure = 0x01
+)
+
+// GSSAPI authentication status (using MsgType values).
+const (
+	GSSAPIStatusSuccess = GSSAPITypeReply // 0x02
+	GSSAPIStatusFailure = GSSAPITypeAbort // 0xFF
+)
