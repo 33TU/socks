@@ -79,24 +79,9 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		return nil, err
 	}
 
-	// Set connection deadline from context if available
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-		defer conn.SetDeadline(time.Time{})
-	}
-
-	// Handle context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// cancellation and deadline handling
+	cleanup := bindConnToContext(ctx, conn)
+	defer cleanup()
 
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
@@ -127,7 +112,6 @@ func (d *Dialer) BindContext(
 	ctx context.Context,
 	network, address string,
 ) (net.Conn, *net.TCPAddr, <-chan error, error) {
-
 	host, port, err := splitHostPort(ctx, address)
 	if err != nil {
 		return nil, nil, nil, err
@@ -138,24 +122,9 @@ func (d *Dialer) BindContext(
 		return nil, nil, nil, err
 	}
 
-	// Set connection deadline from context if available
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-		defer conn.SetDeadline(time.Time{})
-	}
-
-	// Handle context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// cancellation and deadline handling
+	cleanup := bindConnToContext(ctx, conn)
+	defer cleanup()
 
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
@@ -212,30 +181,14 @@ func (d *Dialer) UDPAssociateContext(
 	network string,
 	clientAddr *net.UDPAddr,
 ) (net.Conn, *net.UDPAddr, error) {
-
 	conn, err := d.dialProxy(ctx, network)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Set connection deadline from context if available
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-		defer conn.SetDeadline(time.Time{})
-	}
-
-	// Handle context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// cancellation and deadline handling
+	cleanup := bindConnToContext(ctx, conn)
+	defer cleanup()
 
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
@@ -279,17 +232,9 @@ func (d *Dialer) ResolveContext(ctx context.Context, network, host string) (net.
 	}
 	defer conn.Close()
 
-	// Set connection deadline from context if available
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-		defer conn.SetDeadline(time.Time{})
-	}
-
-	// Handle context cancellation (ResolveContext uses defer conn.Close)
-	go func() {
-		<-ctx.Done()
-		conn.Close() // Safe to call multiple times
-	}()
+	// cancellation and deadline handling
+	cleanup := bindConnToContext(ctx, conn)
+	defer cleanup()
 
 	if err := d.handshake(conn); err != nil {
 		return nil, err
@@ -477,6 +422,28 @@ func (d *Dialer) authGSSAPI(conn net.Conn) error {
 	return nil
 }
 
+// bindConnToContext sets connection deadlines based on context and ensures cleanup on cancellation.
+func bindConnToContext(ctx context.Context, conn net.Conn) (cleanup func()) {
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+
+	exitCh := make(chan struct{})
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-exitCh:
+		}
+	}()
+
+	return func() {
+		close(exitCh)
+		conn.SetDeadline(time.Time{})
+	}
+}
+
 // doRequest sends a SOCKS5 request and reads the reply.
 func (d *Dialer) doRequest(
 	conn net.Conn,
@@ -484,7 +451,6 @@ func (d *Dialer) doRequest(
 	host string,
 	port uint16,
 ) (*Reply, error) {
-
 	ip := net.ParseIP(host)
 
 	req := Request{

@@ -42,24 +42,9 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		return nil, err
 	}
 
-	// Set connection deadline from context if available
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-		defer conn.SetDeadline(time.Time{})
-	}
-
-	// Handle context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// cancellation and deadline handling
+	cleanup := bindConnToContext(ctx, conn)
+	defer cleanup()
 
 	reply, err := d.doRequest(conn, CmdConnect, host, port)
 	if err != nil {
@@ -97,24 +82,9 @@ func (d *Dialer) BindContext(
 		return nil, nil, nil, err
 	}
 
-	// Set connection deadline from context if available
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
-		defer conn.SetDeadline(time.Time{})
-	}
-
-	// Handle context cancellation
-	exitCh := make(chan struct{})
-	defer close(exitCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-exitCh:
-			return
-		}
-	}()
+	// cancellation and deadline handling
+	cleanup := bindConnToContext(ctx, conn)
+	defer cleanup()
 
 	reply, err := d.doRequest(conn, CmdBind, host, port)
 	if err != nil {
@@ -166,6 +136,28 @@ func (d *Dialer) dialProxy(ctx context.Context, network string) (net.Conn, error
 		dialer = socksnet.DefaultDialer
 	}
 	return dialer.DialContext(ctx, network, d.ProxyAddr)
+}
+
+// bindConnToContext sets connection deadlines based on context and ensures cleanup on cancellation.
+func bindConnToContext(ctx context.Context, conn net.Conn) (cleanup func()) {
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+
+	exitCh := make(chan struct{})
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-exitCh:
+		}
+	}()
+
+	return func() {
+		close(exitCh)
+		conn.SetDeadline(time.Time{})
+	}
 }
 
 // doRequest sends a SOCKS4 request and reads the reply.
