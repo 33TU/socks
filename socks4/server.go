@@ -115,14 +115,14 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// Read SOCKS4 request using pooled reader
 	var req Request
 	if _, err := req.ReadFrom(reader); err != nil {
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		handler.OnError(ctx, conn, err)
 		return
 	}
 
 	// Validate user ID
 	if err := handler.OnUserID(ctx, conn, req.UserID, len(req.UserID) > 0); err != nil {
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		handler.OnError(ctx, conn, fmt.Errorf("user ID validation failed: %w", err))
 		return
 	}
@@ -137,9 +137,37 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	}
 }
 
-// writeReject sends a SOCKS4 reply with the given rejection code.
-func writeReject(conn net.Conn, code byte) {
+// WriteRejectReply sends a SOCKS4 reply with the given rejection code.
+func WriteRejectReply(conn net.Conn, code byte) {
 	var resp Reply
 	resp.Init(0, code, 0, net.IPv4zero)
 	resp.WriteTo(conn)
+}
+
+// WriteSuccessReply writes a SOCKS4 success reply with the given network address.
+func WriteSuccessReply(conn net.Conn, addr net.Addr) error {
+	var ip net.IP
+	var port uint16
+
+	// Extract IP and port, fallback to 0.0.0.0:0 if not TCP
+	if addr == nil {
+		ip = net.IPv4zero
+		port = 0
+	} else if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+		ip = tcpAddr.IP.To4()
+		if ip == nil {
+			ip = net.IPv4zero // Fallback if not IPv4
+		}
+		port = uint16(tcpAddr.Port)
+	} else {
+		// Fallback for non-TCP addresses
+		ip = net.IPv4zero
+		port = 0
+	}
+
+	// Send success reply
+	var resp Reply
+	resp.Init(0, RepGranted, port, ip)
+	_, err := resp.WriteTo(conn)
+	return err
 }

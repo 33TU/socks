@@ -134,7 +134,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	var handshakeReq HandshakeRequest
 	if _, err := handshakeReq.ReadFrom(reader); err != nil {
 		// Send "No acceptable methods" reply for malformed handshake
-		writeHandshake(conn, MethodNoAcceptable)
+		WriteHandshake(conn, MethodNoAcceptable)
 		handler.OnError(ctx, conn, err)
 		return
 	}
@@ -142,13 +142,13 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	selectedMethod, err := handler.OnHandshake(ctx, conn, &handshakeReq)
 	if err != nil {
 		// Send "No acceptable methods" reply
-		writeHandshake(conn, MethodNoAcceptable)
+		WriteHandshake(conn, MethodNoAcceptable)
 		handler.OnError(ctx, conn, err)
 		return
 	}
 
 	// Send handshake reply
-	if err := writeHandshake(conn, selectedMethod); err != nil {
+	if err := WriteHandshake(conn, selectedMethod); err != nil {
 		handler.OnError(ctx, conn, err)
 		return
 	}
@@ -175,7 +175,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 			return
 		}
 	default:
-		writeReject(conn, RepGeneralFailure)
+		WriteRejectReply(conn, RepGeneralFailure)
 		handler.OnError(ctx, conn, fmt.Errorf("unsupported authentication method: %d", selectedMethod))
 		return
 	}
@@ -183,7 +183,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// Phase 3: Request processing
 	var req Request
 	if _, err := req.ReadFrom(reader); err != nil {
-		writeReject(conn, RepGeneralFailure)
+		WriteRejectReply(conn, RepGeneralFailure)
 		handler.OnError(ctx, conn, err)
 		return
 	}
@@ -263,15 +263,53 @@ func handleGSSAPIAuth(ctx context.Context, handler ServerHandler, conn net.Conn,
 	return nil
 }
 
-// writeReject sends a SOCKS5 reply with the given rejection code.
-func writeReject(conn net.Conn, code byte) {
+// WriteRejectReply sends a SOCKS5 reply with the given rejection code.
+func WriteRejectReply(conn net.Conn, code byte) {
 	var resp Reply
 	resp.Init(SocksVersion, code, 0, AddrTypeIPv4, net.IPv4zero, "", 0)
 	resp.WriteTo(conn)
 }
 
-// writeHandshake sends a SOCKS5 handshake reply with the given code.
-func writeHandshake(conn net.Conn, code byte) error {
+// WriteSuccessReply writes a SOCKS5 success reply with the given network address.
+func WriteSuccessReply(conn net.Conn, addr net.Addr) error {
+	var ip net.IP
+	var port uint16
+	var domain string
+	var addrType byte
+
+	// Extract IP and port, fallback to 0.0.0.0:0 if not TCP
+	if addr == nil {
+		ip = net.IPv4zero
+		port = 0
+	} else if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+		ip = tcpAddr.IP
+		port = uint16(tcpAddr.Port)
+	} else {
+		// Fallback for non-TCP addresses
+		ip = net.IPv4zero
+		port = 0
+	}
+
+	// Determine address type for response
+	if ip.To4() != nil {
+		addrType = AddrTypeIPv4
+		ip = ip.To4()
+	} else if ip.To16() != nil {
+		addrType = AddrTypeIPv6
+	} else {
+		addrType = AddrTypeIPv4
+		ip = net.IPv4zero
+	}
+
+	// Send success reply
+	var resp Reply
+	resp.Init(SocksVersion, RepSuccess, 0, addrType, ip, domain, port)
+	_, err := resp.WriteTo(conn)
+	return err
+}
+
+// WriteHandshake sends a SOCKS5 handshake reply with the given code.
+func WriteHandshake(conn net.Conn, code byte) error {
 	var handshakeReply HandshakeReply
 	handshakeReply.Init(SocksVersion, code)
 	_, err := handshakeReply.WriteTo(conn)

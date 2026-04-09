@@ -83,7 +83,7 @@ func (d *BaseServerHandler) OnRequest(ctx context.Context, conn net.Conn, req *R
 
 func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowConnect {
-		writeReject(conn, RepConnectionNotAllowed)
+		WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("CONNECT command not allowed")
 	}
 
@@ -100,7 +100,7 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 
 func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowBind {
-		writeReject(conn, RepConnectionNotAllowed)
+		WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("BIND command not allowed")
 	}
 
@@ -116,7 +116,7 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 
 func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowUDPAssociate {
-		writeReject(conn, RepConnectionNotAllowed)
+		WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("UDP ASSOCIATE command not allowed")
 	}
 
@@ -133,7 +133,7 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 
 func (d *BaseServerHandler) OnResolve(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowResolve {
-		writeReject(conn, RepConnectionNotAllowed)
+		WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("RESOLVE command not allowed")
 	}
 
@@ -191,7 +191,7 @@ func BaseOnRequest(ctx context.Context, handler ServerHandler, conn net.Conn, re
 	case CmdResolve:
 		return handler.OnResolve(ctx, conn, req)
 	default:
-		writeReject(conn, RepCommandNotSupported)
+		WriteRejectReply(conn, RepCommandNotSupported)
 		return fmt.Errorf("unsupported command: %d", req.Command)
 	}
 }
@@ -220,7 +220,7 @@ func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer sock
 				code = RepConnectionRefused
 			}
 		}
-		writeReject(conn, code)
+		WriteRejectReply(conn, code)
 		return fmt.Errorf("failed to connect to target %s: %w", targetAddr, err)
 	}
 	defer remote.Close()
@@ -253,7 +253,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	// Bind to any available port on all interfaces
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
-		writeReject(conn, RepGeneralFailure)
+		WriteRejectReply(conn, RepGeneralFailure)
 		return fmt.Errorf("failed to bind listening port: %w", err)
 	}
 	defer listener.Close()
@@ -271,7 +271,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	// Wait for incoming connection
 	incomingConn, err := listener.Accept()
 	if err != nil {
-		writeReject(conn, RepGeneralFailure)
+		WriteRejectReply(conn, RepGeneralFailure)
 		return fmt.Errorf("failed to accept incoming connection: %w", err)
 	}
 	defer incomingConn.Close()
@@ -280,7 +280,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	incomingAddr := incomingConn.RemoteAddr().(*net.TCPAddr)
 	expectedIP := req.IP
 	if expectedIP != nil && !expectedIP.IsUnspecified() && !expectedIP.Equal(incomingAddr.IP) {
-		writeReject(conn, RepConnectionNotAllowed)
+		WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("incoming connection from %s, expected %s", incomingAddr.IP, expectedIP)
 	}
 
@@ -305,44 +305,6 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	})
 
 	return g.Wait()
-}
-
-// WriteSuccessReply writes a SOCKS5 success reply with the given network address.
-func WriteSuccessReply(conn net.Conn, addr net.Addr) error {
-	var ip net.IP
-	var port uint16
-	var domain string
-	var addrType byte
-
-	// Extract IP and port, fallback to 0.0.0.0:0 if not TCP
-	if addr == nil {
-		ip = net.IPv4zero
-		port = 0
-	} else if tcpAddr, ok := addr.(*net.TCPAddr); ok {
-		ip = tcpAddr.IP
-		port = uint16(tcpAddr.Port)
-	} else {
-		// Fallback for non-TCP addresses
-		ip = net.IPv4zero
-		port = 0
-	}
-
-	// Determine address type for response
-	if ip.To4() != nil {
-		addrType = AddrTypeIPv4
-		ip = ip.To4()
-	} else if ip.To16() != nil {
-		addrType = AddrTypeIPv6
-	} else {
-		addrType = AddrTypeIPv4
-		ip = net.IPv4zero
-	}
-
-	// Send success reply
-	var resp Reply
-	resp.Init(SocksVersion, RepSuccess, 0, addrType, ip, domain, port)
-	_, err := resp.WriteTo(conn)
-	return err
 }
 
 // BaseOnUDPAssociate provides UDP ASSOCIATE implementation

@@ -41,7 +41,7 @@ func (d *BaseServerHandler) OnAccept(ctx context.Context, conn net.Conn) error {
 
 func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowBind {
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		return fmt.Errorf("BIND command not allowed")
 	}
 
@@ -57,7 +57,7 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 
 func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowConnect {
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		return fmt.Errorf("CONNECT command not allowed")
 	}
 
@@ -105,7 +105,7 @@ func BaseOnRequest(ctx context.Context, handler ServerHandler, conn net.Conn, re
 	case CmdBind:
 		return handler.OnBind(ctx, conn, req)
 	default:
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		return fmt.Errorf("unknown command: %d", req.Command)
 	}
 }
@@ -124,14 +124,15 @@ func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer sock
 
 	remote, err := dialer.DialContext(ctx, "tcp", req.Addr())
 	if err != nil {
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		return fmt.Errorf("failed to connect to target: %w", err)
 	}
 	defer remote.Close()
 
-	var resp Reply
-	resp.Init(0, RepGranted, req.Port, req.IPv4())
-	resp.WriteTo(conn)
+	// Send success reply
+	if err := WriteSuccessReply(conn, remote.LocalAddr()); err != nil {
+		return fmt.Errorf("failed to write connect response: %w", err)
+	}
 
 	if bufferSize <= 0 {
 		bufferSize = 1024 * 32
@@ -156,7 +157,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	// Bind to any available port on all interfaces
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		return fmt.Errorf("failed to bind listening port: %w", err)
 	}
 	defer listener.Close()
@@ -169,9 +170,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	}
 
 	// Send first reply with bound address/port
-	var resp Reply
-	resp.Init(0, RepGranted, uint16(boundAddr.Port), boundIP)
-	if _, err := resp.WriteTo(conn); err != nil {
+	if err := WriteSuccessReply(conn, listener.Addr()); err != nil {
 		return fmt.Errorf("failed to write bind response: %w", err)
 	}
 
@@ -183,7 +182,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	// Wait for incoming connection
 	incomingConn, err := listener.Accept()
 	if err != nil {
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		return fmt.Errorf("failed to accept incoming connection: %w", err)
 	}
 	defer incomingConn.Close()
@@ -192,18 +191,12 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	incomingAddr := incomingConn.RemoteAddr().(*net.TCPAddr)
 	expectedIP := req.IPv4()
 	if !expectedIP.Equal(net.IPv4zero) && !expectedIP.Equal(incomingAddr.IP) {
-		writeReject(conn, RepRejected)
+		WriteRejectReply(conn, RepRejected)
 		return fmt.Errorf("incoming connection from %s, expected %s", incomingAddr.IP, expectedIP)
 	}
 
 	// Send second reply indicating successful connection
-	var resp2 Reply
-	incomingIP := incomingAddr.IP.To4()
-	if incomingIP == nil {
-		incomingIP = net.IPv4zero
-	}
-	resp2.Init(0, RepGranted, uint16(incomingAddr.Port), incomingIP)
-	if _, err := resp2.WriteTo(conn); err != nil {
+	if err := WriteSuccessReply(conn, incomingConn.RemoteAddr()); err != nil {
 		return fmt.Errorf("failed to write connection response: %w", err)
 	}
 
