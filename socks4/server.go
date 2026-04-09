@@ -98,12 +98,23 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		return
 	}
 
+	// Use reused reader to reduce allocations
+	reader := internal.GetReader(conn)
+	released := false
+
+	release := func() {
+		if released {
+			return
+		}
+
+		released = true
+		internal.PutReader(reader)
+	}
+	defer release()
+
 	// Read SOCKS4 request using pooled reader
 	var req Request
-	reader := internal.GetReader(conn)
-	_, err := req.ReadFrom(reader)
-	internal.PutReader(reader)
-	if err != nil {
+	if _, err := req.ReadFrom(reader); err != nil {
 		handler.OnError(ctx, conn, err)
 		return
 	}
@@ -114,6 +125,9 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		handler.OnError(ctx, conn, fmt.Errorf("user ID validation failed: %w", err))
 		return
 	}
+
+	// Release resources used for io
+	release()
 
 	// Handle the request
 	if err := handler.OnRequest(ctx, conn, &req); err != nil {

@@ -40,17 +40,38 @@ func (d *BaseServerHandler) OnAccept(ctx context.Context, conn net.Conn) error {
 	return nil
 }
 
-func (d *BaseServerHandler) OnHandshake(ctx context.Context, conn net.Conn, req *HandshakeRequest) error {
+func (d *BaseServerHandler) OnHandshake(ctx context.Context, conn net.Conn, req *HandshakeRequest) (byte, error) {
 	slog.InfoContext(ctx, "handshake request", "from", conn.RemoteAddr(), "methods", req.Methods)
 
 	err := BaseOnHandshake(ctx, conn, req, d)
 	if err != nil {
 		slog.ErrorContext(ctx, "handshake failed", "error", err)
-		return err
+		return MethodNoAcceptable, err
 	}
 
-	slog.InfoContext(ctx, "handshake completed", "from", conn.RemoteAddr())
-	return nil
+	// Determine selected authentication method
+	supportedMethods := d.GetSupportedMethods()
+
+	var selectedMethod byte = MethodNoAcceptable
+	for _, clientMethod := range req.Methods {
+		for _, serverMethod := range supportedMethods {
+			if clientMethod == serverMethod {
+				selectedMethod = clientMethod
+				break
+			}
+		}
+		if selectedMethod != MethodNoAcceptable {
+			break
+		}
+	}
+
+	if selectedMethod == MethodNoAcceptable {
+		slog.ErrorContext(ctx, "no acceptable authentication methods", "client_methods", req.Methods, "server_methods", supportedMethods)
+		return MethodNoAcceptable, fmt.Errorf("no acceptable authentication methods")
+	}
+
+	slog.InfoContext(ctx, "handshake completed", "from", conn.RemoteAddr(), "selected_method", selectedMethod)
+	return selectedMethod, nil
 }
 
 func (d *BaseServerHandler) OnAuthUserPass(ctx context.Context, conn net.Conn, username, password string) error {
@@ -157,6 +178,14 @@ func (d *BaseServerHandler) OnError(ctx context.Context, conn net.Conn, err erro
 
 func (d *BaseServerHandler) OnPanic(ctx context.Context, conn net.Conn, r any) {
 	slog.WarnContext(ctx, "panic occurred", "error", r)
+}
+
+// GetSupportedMethods returns the supported authentication methods.
+func (d *BaseServerHandler) GetSupportedMethods() []byte {
+	if d.SupportedMethods == nil {
+		return []byte{MethodNoAuth}
+	}
+	return d.SupportedMethods
 }
 
 // BaseOnHandshake provides a default handshake implementation that does nothing and allows all methods.

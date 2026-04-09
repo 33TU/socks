@@ -3,8 +3,11 @@ package socks5
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"time"
+
+	"github.com/33TU/socks/internal"
 )
 
 // DefaultServerHandler is a default implementation used when no custom ServerHandler is provided to Serve or ListenAndServe.
@@ -30,7 +33,7 @@ type ServerHandler interface {
 	OnAccept(ctx context.Context, conn net.Conn) error
 
 	// OnHandshake is called during method negotiation phase.
-	OnHandshake(ctx context.Context, conn net.Conn, req *HandshakeRequest) error
+	OnHandshake(ctx context.Context, conn net.Conn, req *HandshakeRequest) (selectedMethod byte, err error)
 
 	// OnAuthUserPass is called for username/password authentication.
 	OnAuthUserPass(ctx context.Context, conn net.Conn, username, password string) error
@@ -107,30 +110,156 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		}
 	}()
 
-}
+	// OnAccept callback
+	if err := handler.OnAccept(ctx, conn); err != nil {
+		handler.OnError(ctx, conn, err)
+		return
+	}
 
-// handleHandshake handles the SOCKS5 method negotiation phase and returns the chosen method.
-func handleHandshake(ctx context.Context, handler ServerHandler, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer) error {
-	return nil
-}
+	// Use reused reader/writer to reduce allocations
+	reader := internal.GetReader(conn)
+	writer := internal.GetWriter(conn)
+	released := false
 
-// handleAuthentication handles authentication sub-negotiation based on the chosen method.
-func handleAuthentication(ctx context.Context, handler ServerHandler, conn net.Conn, method byte, reader *bufio.Reader, writer *bufio.Writer) error {
-	return nil
+	release := func() {
+		if released {
+			return
+		}
+
+		released = true
+		internal.PutReader(reader)
+		internal.PutWriter(writer)
+	}
+	defer release()
+
+	// Phase 1: Handshake (method negotiation)
+	var handshakeReq HandshakeRequest
+	if _, err := handshakeReq.ReadFrom(reader); err != nil {
+		handler.OnError(ctx, conn, err)
+		return
+	}
+
+	selectedMethod, err := handler.OnHandshake(ctx, conn, &handshakeReq)
+	if err != nil {
+		// Send "No acceptable methods" reply
+		var handshakeReply HandshakeReply
+		handshakeReply.Init(SocksVersion, MethodNoAcceptable)
+		handshakeReply.WriteTo(writer)
+		handler.OnError(ctx, conn, err)
+		return
+	}
+
+	// Send handshake reply
+	var handshakeReply HandshakeReply
+	handshakeReply.Init(SocksVersion, selectedMethod)
+	if _, err := handshakeReply.WriteTo(writer); err != nil {
+		handler.OnError(ctx, conn, err)
+		return
+	}
+
+	if selectedMethod == MethodNoAcceptable {
+		handler.OnError(ctx, conn, fmt.Errorf("no acceptable authentication methods"))
+		return
+	}
+
+	// Phase 2: Authentication (if required)
+	switch selectedMethod {
+	case MethodNoAuth:
+		// No authentication required, proceed to request phase
+	case MethodUserPass:
+		if err := handleUserPassAuth(ctx, handler, conn, reader, writer); err != nil {
+			handler.OnError(ctx, conn, err)
+			return
+		}
+	case MethodGSSAPI:
+		if err := handleGSSAPIAuth(ctx, handler, conn, reader, writer); err != nil {
+			handler.OnError(ctx, conn, err)
+			return
+		}
+	default:
+		handler.OnError(ctx, conn, fmt.Errorf("unsupported authentication method: %d", selectedMethod))
+		return
+	}
+
+	// Phase 3: Request processing
+	var req Request
+	if _, err := req.ReadFrom(reader); err != nil {
+		handler.OnError(ctx, conn, err)
+		return
+	}
+
+	// Release reader/writer resources before handling request
+	release()
+
+	// Handle the request through the handler
+	if err := handler.OnRequest(ctx, conn, &req); err != nil {
+		handler.OnError(ctx, conn, err)
+		return
+	}
 }
 
 // handleUserPassAuth handles username/password authentication.
 func handleUserPassAuth(ctx context.Context, handler ServerHandler, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer) error {
+	var userPassReq UserPassRequest
+	if _, err := userPassReq.ReadFrom(reader); err != nil {
+		return err
+	}
+
+	err := handler.OnAuthUserPass(ctx, conn, userPassReq.Username, userPassReq.Password)
+	var status byte = UserPassStatusSuccess
+	if err != nil {
+		status = UserPassStatusFailure
+	}
+
+	var userPassReply UserPassReply
+	userPassReply.Init(AuthVersionUserPass, status)
+	if _, err := userPassReply.WriteTo(writer); err != nil {
+		return err
+	}
+
+	if status != UserPassStatusSuccess {
+		return fmt.Errorf("username/password authentication failed: %w", err)
+	}
+
 	return nil
 }
 
 // handleGSSAPIAuth handles GSSAPI authentication.
 func handleGSSAPIAuth(ctx context.Context, handler ServerHandler, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer) error {
-	return nil
-}
+	// GSSAPI authentication can involve multiple round-trips
+	for {
+		var gssapiReq GSSAPIRequest
+		if _, err := gssapiReq.ReadFrom(reader); err != nil {
+			return err
+		}
 
-// handleRequest handles the actual SOCKS5 request after successful handshake.
-func handleRequest(ctx context.Context, handler ServerHandler, conn net.Conn, reader *bufio.Reader) error {
+		// Check for abort message
+		if gssapiReq.MsgType == GSSAPITypeAbort {
+			return fmt.Errorf("GSSAPI authentication aborted by client")
+		}
+
+		responseToken, err := handler.OnAuthGSSAPI(ctx, conn, gssapiReq.Token)
+		var msgType byte = GSSAPITypeReply
+		if err != nil {
+			msgType = GSSAPITypeAbort
+		}
+
+		var gssapiReply GSSAPIReply
+		gssapiReply.Init(GSSAPIVersion, msgType, responseToken)
+		if _, err := gssapiReply.WriteTo(writer); err != nil {
+			return err
+		}
+
+		if msgType == GSSAPITypeAbort {
+			return fmt.Errorf("GSSAPI authentication failed: %w", err)
+		}
+
+		// If no response token, authentication is complete
+		if len(responseToken) == 0 {
+			break
+		}
+	}
+
 	return nil
 }
 
