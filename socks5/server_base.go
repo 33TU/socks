@@ -30,7 +30,7 @@ type BaseServerHandler struct {
 	SupportedMethods []byte
 
 	UserPassAuthenticator func(ctx context.Context, username, password string) error
-	GSSAPIAuthenticator   func(ctx context.Context, token []byte) ([]byte, error)
+	GSSAPIAuthenticator   func(ctx context.Context, token []byte) (resp []byte, done bool, err error)
 }
 
 func (d *BaseServerHandler) OnAccept(ctx context.Context, conn net.Conn) error {
@@ -64,13 +64,13 @@ func (d *BaseServerHandler) OnAuthUserPass(ctx context.Context, conn net.Conn, u
 	return nil // Allow all by default
 }
 
-func (d *BaseServerHandler) OnAuthGSSAPI(ctx context.Context, conn net.Conn, token []byte) ([]byte, error) {
+func (d *BaseServerHandler) OnAuthGSSAPI(ctx context.Context, conn net.Conn, token []byte) ([]byte, bool, error) {
 	slog.InfoContext(ctx, "validating GSSAPI token", "from", conn.RemoteAddr())
 
 	if d.GSSAPIAuthenticator != nil {
 		return d.GSSAPIAuthenticator(ctx, token)
 	}
-	return nil, nil // Allow all by default
+	return nil, true, nil // Allow all by default, and mark as complete
 }
 
 func (d *BaseServerHandler) OnRequest(ctx context.Context, conn net.Conn, req *Request) error {

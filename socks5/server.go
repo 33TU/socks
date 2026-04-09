@@ -39,7 +39,7 @@ type ServerHandler interface {
 	OnAuthUserPass(ctx context.Context, conn net.Conn, username, password string) error
 
 	// OnAuthGSSAPI is called for GSSAPI authentication.
-	OnAuthGSSAPI(ctx context.Context, conn net.Conn, token []byte) ([]byte, error)
+	OnAuthGSSAPI(ctx context.Context, conn net.Conn, token []byte) (resp []byte, done bool, err error)
 
 	// OnRequest is called for each SOCKS5 request after successful handshake/auth.
 	OnRequest(ctx context.Context, conn net.Conn, req *Request) error
@@ -238,7 +238,7 @@ func handleGSSAPIAuth(ctx context.Context, handler ServerHandler, conn net.Conn,
 			return fmt.Errorf("GSSAPI authentication aborted by client")
 		}
 
-		responseToken, err := handler.OnAuthGSSAPI(ctx, conn, gssapiReq.Token)
+		responseToken, done, err := handler.OnAuthGSSAPI(ctx, conn, gssapiReq.Token)
 		var msgType byte = GSSAPITypeReply
 		if err != nil {
 			msgType = GSSAPITypeAbort
@@ -254,8 +254,8 @@ func handleGSSAPIAuth(ctx context.Context, handler ServerHandler, conn net.Conn,
 			return fmt.Errorf("GSSAPI authentication failed: %w", err)
 		}
 
-		// If no response token, authentication is complete
-		if len(responseToken) == 0 {
+		// Authentication is complete when done is true
+		if done {
 			break
 		}
 	}

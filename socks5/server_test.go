@@ -738,28 +738,28 @@ func TestBaseServerHandler_GSSAPI_MultiRound(t *testing.T) {
 
 	// Server-side GSSAPI authenticator for 3-round multi-round exchange
 	round := 0
-	gssapiAuthenticator := func(ctx context.Context, token []byte) ([]byte, error) {
+	gssapiAuthenticator := func(ctx context.Context, token []byte) ([]byte, bool, error) {
 		round++
 		switch round {
 		case 1:
 			if string(token) == "init-token-round1" {
-				return []byte("server-round1-token"), nil
+				return []byte("server-round1-token"), false, nil
 			}
-			return nil, fmt.Errorf("unexpected round 1 token: %s", token)
+			return nil, false, fmt.Errorf("unexpected round 1 token: %s", token)
 		case 2:
 			if string(token) == "client-round2-token" {
-				return []byte("server-round2-token"), nil
+				return []byte("server-round2-token"), false, nil
 			}
-			return nil, fmt.Errorf("unexpected round 2 token: %s", token)
+			return nil, false, fmt.Errorf("unexpected round 2 token: %s", token)
 		case 3:
 			if string(token) == "client-round3-token" {
-				// Return empty token to complete authentication
+				// Return empty token and done=true to complete authentication
 				// The 3-round token exchange has established the security context
-				return nil, nil
+				return nil, true, nil
 			}
-			return nil, fmt.Errorf("unexpected round 3 token: %s", token)
+			return nil, false, fmt.Errorf("unexpected round 3 token: %s", token)
 		default:
-			return nil, fmt.Errorf("unexpected round: %d", round)
+			return nil, false, fmt.Errorf("unexpected round: %d", round)
 		}
 	}
 
@@ -819,8 +819,8 @@ func TestBaseServerHandler_GSSAPI_Failed(t *testing.T) {
 	defer echoLn.Close()
 
 	// Server-side GSSAPI authenticator that always fails
-	gssapiAuthenticator := func(ctx context.Context, token []byte) ([]byte, error) {
-		return nil, fmt.Errorf("server-side GSSAPI authentication failed")
+	gssapiAuthenticator := func(ctx context.Context, token []byte) ([]byte, bool, error) {
+		return nil, false, fmt.Errorf("server-side GSSAPI authentication failed")
 	}
 
 	handler := &socks5.BaseServerHandler{
