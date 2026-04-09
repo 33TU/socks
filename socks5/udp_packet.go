@@ -172,10 +172,6 @@ func (p *UDPPacket) ValidateHeader() error {
 // WriteTo writes a UDP ASSOCIATE packet to a Writer.
 // Implements io.WriterTo.
 func (p *UDPPacket) WriteTo(dst io.Writer) (int64, error) {
-	if err := p.Validate(); err != nil {
-		return 0, err
-	}
-
 	var total int64
 
 	// Write RSV + FRAG + ATYP

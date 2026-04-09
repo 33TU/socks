@@ -72,16 +72,14 @@ func (h *HandshakeRequest) ReadFrom(src io.Reader) (int64, error) {
 // WriteTo writes the handshake request to an io.Writer.
 // Implements io.WriterTo.
 func (h *HandshakeRequest) WriteTo(dst io.Writer) (int64, error) {
-	buf := []byte{h.Version, h.NMethods}
-	n, err := dst.Write(buf)
-	total := int64(n)
-	if err != nil {
-		return total, err
-	}
+	var bufArr [258]byte // 2 + max 255 methods (spec)
+	buf := bufArr[:0]
 
-	n2, err := dst.Write(h.Methods)
-	total += int64(n2)
-	return total, err
+	buf = append(buf, h.Version, h.NMethods)
+	buf = append(buf, h.Methods...)
+
+	n, err := dst.Write(buf)
+	return int64(n), err
 }
 
 // String returns a human-readable representation of the handshake request.

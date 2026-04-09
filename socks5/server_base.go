@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"time"
 
 	socksnet "github.com/33TU/socks/net"
+	"golang.org/x/sync/errgroup"
 )
 
 // BaseServerHandler provides a basic implementation of ServerHandler with configurable options.
@@ -43,31 +45,10 @@ func (d *BaseServerHandler) OnAccept(ctx context.Context, conn net.Conn) error {
 func (d *BaseServerHandler) OnHandshake(ctx context.Context, conn net.Conn, req *HandshakeRequest) (byte, error) {
 	slog.InfoContext(ctx, "handshake request", "from", conn.RemoteAddr(), "methods", req.Methods)
 
-	err := BaseOnHandshake(ctx, conn, req, d)
+	selectedMethod, err := BaseOnHandshake(ctx, conn, req, d.GetSupportedMethods())
 	if err != nil {
 		slog.ErrorContext(ctx, "handshake failed", "error", err)
 		return MethodNoAcceptable, err
-	}
-
-	// Determine selected authentication method
-	supportedMethods := d.GetSupportedMethods()
-
-	var selectedMethod byte = MethodNoAcceptable
-	for _, clientMethod := range req.Methods {
-		for _, serverMethod := range supportedMethods {
-			if clientMethod == serverMethod {
-				selectedMethod = clientMethod
-				break
-			}
-		}
-		if selectedMethod != MethodNoAcceptable {
-			break
-		}
-	}
-
-	if selectedMethod == MethodNoAcceptable {
-		slog.ErrorContext(ctx, "no acceptable authentication methods", "client_methods", req.Methods, "server_methods", supportedMethods)
-		return MethodNoAcceptable, fmt.Errorf("no acceptable authentication methods")
 	}
 
 	slog.InfoContext(ctx, "handshake completed", "from", conn.RemoteAddr(), "selected_method", selectedMethod)
@@ -188,24 +169,207 @@ func (d *BaseServerHandler) GetSupportedMethods() []byte {
 	return d.SupportedMethods
 }
 
-// BaseOnHandshake provides a default handshake implementation that does nothing and allows all methods.
-func BaseOnHandshake(ctx context.Context, conn net.Conn, req *HandshakeRequest, handler ServerHandler) error {
-	return nil
+// BaseOnHandshake provides a default handshake implementation that selects the first matching authentication method.
+func BaseOnHandshake(ctx context.Context, conn net.Conn, req *HandshakeRequest, supportedMethods []byte) (byte, error) {
+	var selectedMethod byte = MethodNoAcceptable
+
+	for _, clientMethod := range req.Methods {
+		if slices.Contains(supportedMethods, clientMethod) {
+			selectedMethod = clientMethod
+		}
+		if selectedMethod != MethodNoAcceptable {
+			break
+		}
+	}
+
+	if selectedMethod == MethodNoAcceptable {
+		return MethodNoAcceptable, fmt.Errorf("no acceptable authentication methods: client=%v server=%v", req.Methods, supportedMethods)
+	}
+
+	return selectedMethod, nil
 }
 
-// BaseOnRequest provides request handling logic for CONNECT, BIND, and UDP ASSOCIATE commands.
+// BaseOnRequest provides request handling logic for CONNECT, BIND, UDP ASSOCIATE, and RESOLVE commands.
 func BaseOnRequest(ctx context.Context, handler ServerHandler, conn net.Conn, req *Request) error {
-	return nil
+	switch req.Command {
+	case CmdConnect:
+		return handler.OnConnect(ctx, conn, req)
+	case CmdBind:
+		return handler.OnBind(ctx, conn, req)
+	case CmdUDPAssociate:
+		return handler.OnUDPAssociate(ctx, conn, req)
+	case CmdResolve:
+		return handler.OnResolve(ctx, conn, req)
+	default:
+		writeReject(conn, RepCommandNotSupported)
+		return fmt.Errorf("unsupported command: %d", req.Command)
+	}
 }
 
 // BaseOnConnect provides CONNECT implementation
 func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer socksnet.Dialer, dialTimeout, connTimeout time.Duration, bufferSize int) error {
-	return nil
+	if dialer == nil {
+		dialer = socksnet.DefaultDialer
+	}
+
+	if dialTimeout > 0 {
+		ctxDial, cancel := context.WithTimeout(ctx, dialTimeout)
+		defer cancel()
+		ctx = ctxDial
+	}
+
+	targetAddr := req.Addr()
+	remote, err := dialer.DialContext(ctx, "tcp", targetAddr)
+	if err != nil {
+		// Determine appropriate SOCKS5 error code
+		var code byte = RepGeneralFailure
+		if ne, ok := err.(net.Error); ok {
+			if ne.Timeout() {
+				code = RepTTLExpired
+			} else {
+				code = RepConnectionRefused
+			}
+		}
+		writeReject(conn, code)
+		return fmt.Errorf("failed to connect to target %s: %w", targetAddr, err)
+	}
+	defer remote.Close()
+
+	// Get bound address from the connection
+	boundAddr := remote.LocalAddr().(*net.TCPAddr)
+	boundIP := boundAddr.IP
+	var boundDomain string
+	var addrType byte
+
+	// Determine address type for response
+	if boundIP.To4() != nil {
+		addrType = AddrTypeIPv4
+		boundIP = boundIP.To4()
+	} else if boundIP.To16() != nil {
+		addrType = AddrTypeIPv6
+	} else {
+		addrType = AddrTypeIPv4
+		boundIP = net.IPv4zero
+	}
+
+	// Send success reply with bound address
+	var resp Reply
+	resp.Init(SocksVersion, RepSuccess, 0, addrType, boundIP, boundDomain, uint16(boundAddr.Port))
+	if _, err := resp.WriteTo(conn); err != nil {
+		return fmt.Errorf("failed to write connect response: %w", err)
+	}
+
+	if bufferSize <= 0 {
+		bufferSize = 1024 * 32
+	}
+
+	// Start bidirectional copying with coordinated error handling
+	g, ctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return socksnet.CopyConn(remote, conn, connTimeout, bufferSize)
+	})
+
+	g.Go(func() error {
+		return socksnet.CopyConn(conn, remote, connTimeout, bufferSize)
+	})
+
+	return g.Wait()
 }
 
 // BaseOnBind provides BIND implementation
 func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout, connTimeout time.Duration, bufferSize int) error {
-	return nil
+	// Bind to any available port on all interfaces
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		writeReject(conn, RepGeneralFailure)
+		return fmt.Errorf("failed to bind listening port: %w", err)
+	}
+	defer listener.Close()
+
+	// Get the bound address
+	boundAddr := listener.Addr().(*net.TCPAddr)
+	boundIP := boundAddr.IP
+	var boundDomain string
+	var addrType byte
+
+	// Determine address type for response
+	if boundIP.To4() != nil {
+		addrType = AddrTypeIPv4
+		boundIP = boundIP.To4()
+	} else if boundIP.To16() != nil {
+		addrType = AddrTypeIPv6
+	} else {
+		addrType = AddrTypeIPv4
+		boundIP = net.IPv4zero
+	}
+
+	// Send first reply with bound address/port
+	var resp Reply
+	resp.Init(SocksVersion, RepSuccess, 0, addrType, boundIP, boundDomain, uint16(boundAddr.Port))
+	if _, err := resp.WriteTo(conn); err != nil {
+		return fmt.Errorf("failed to write bind response: %w", err)
+	}
+
+	// Set bind timeout for accepting incoming connection
+	if acceptTimeout > 0 {
+		listener.(*net.TCPListener).SetDeadline(time.Now().Add(acceptTimeout))
+	}
+
+	// Wait for incoming connection
+	incomingConn, err := listener.Accept()
+	if err != nil {
+		writeReject(conn, RepGeneralFailure)
+		return fmt.Errorf("failed to accept incoming connection: %w", err)
+	}
+	defer incomingConn.Close()
+
+	// Validate source address (if not 0.0.0.0/::)
+	incomingAddr := incomingConn.RemoteAddr().(*net.TCPAddr)
+	expectedIP := req.IP
+	if expectedIP != nil && !expectedIP.IsUnspecified() && !expectedIP.Equal(incomingAddr.IP) {
+		writeReject(conn, RepConnectionNotAllowed)
+		return fmt.Errorf("incoming connection from %s, expected %s", incomingAddr.IP, expectedIP)
+	}
+
+	// Send second reply indicating successful connection
+	var resp2 Reply
+	incomingIP := incomingAddr.IP
+	var incomingDomain string
+	var incomingAddrType byte
+
+	// Determine address type for incoming connection
+	if incomingIP.To4() != nil {
+		incomingAddrType = AddrTypeIPv4
+		incomingIP = incomingIP.To4()
+	} else if incomingIP.To16() != nil {
+		incomingAddrType = AddrTypeIPv6
+	} else {
+		incomingAddrType = AddrTypeIPv4
+		incomingIP = net.IPv4zero
+	}
+
+	resp2.Init(SocksVersion, RepSuccess, 0, incomingAddrType, incomingIP, incomingDomain, uint16(incomingAddr.Port))
+	if _, err := resp2.WriteTo(conn); err != nil {
+		return fmt.Errorf("failed to write connection response: %w", err)
+	}
+
+	if bufferSize <= 0 {
+		bufferSize = 1024 * 32
+	}
+
+	// Start bidirectional copying with coordinated error handling
+	g, ctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return socksnet.CopyConn(incomingConn, conn, connTimeout, bufferSize)
+	})
+
+	g.Go(func() error {
+		return socksnet.CopyConn(conn, incomingConn, connTimeout, bufferSize)
+	})
+
+	return g.Wait()
 }
 
 // BaseOnUDPAssociate provides UDP ASSOCIATE implementation

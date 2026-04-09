@@ -99,41 +99,19 @@ func (r *UserPassRequest) ReadFrom(src io.Reader) (int64, error) {
 // WriteTo writes the username/password request to a writer.
 // Implements io.WriterTo.
 func (r *UserPassRequest) WriteTo(dst io.Writer) (int64, error) {
-	if err := r.Validate(); err != nil {
-		return 0, err
-	}
+	var bufArr [513]byte // 1 + 1 + 255 + 1 + 255 (spec max)
+	buf := bufArr[:0]
 
-	buf := []byte{
+	buf = append(buf,
 		r.Version,
 		byte(len(r.Username)),
-	}
-	total := int64(0)
+	)
+	buf = append(buf, r.Username...)
+	buf = append(buf, byte(len(r.Password)))
+	buf = append(buf, r.Password...)
 
-	// Write version + ULEN
 	n, err := dst.Write(buf)
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	// Write username
-	n, err = io.WriteString(dst, r.Username)
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	// Write password header and body
-	pwHdr := [1]byte{byte(len(r.Password))}
-	n, err = dst.Write(pwHdr[:])
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	n, err = io.WriteString(dst, r.Password)
-	total += int64(n)
-	return total, err
+	return int64(n), err
 }
 
 // String returns a human-readable representation.

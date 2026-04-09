@@ -157,42 +157,38 @@ func (r *Reply) ReadFrom(src io.Reader) (int64, error) {
 // WriteTo writes a SOCKS5 reply to a Writer.
 // Implements io.WriterTo.
 func (r *Reply) WriteTo(dst io.Writer) (int64, error) {
-	if err := r.Validate(); err != nil {
-		return 0, err
-	}
+	var bufArr [264]byte
+	buf := bufArr[:0]
 
-	hdr := [4]byte{r.Version, r.Reply, r.Reserved, r.AddrType}
-	total := int64(0)
+	// Header
+	buf = append(buf, r.Version, r.Reply, r.Reserved, r.AddrType)
 
-	n, err := dst.Write(hdr[:])
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
+	// Address
 	switch r.AddrType {
 	case AddrTypeIPv4:
-		n, err = dst.Write(r.IP.To4())
+		buf = append(buf, r.IP.To4()...)
+
 	case AddrTypeIPv6:
-		n, err = dst.Write(r.IP.To16())
+		buf = append(buf, r.IP.To16()...)
+
 	case AddrTypeDomain:
-		n, err = dst.Write([]byte{byte(len(r.Domain))})
-		total += int64(n)
-		if err == nil {
-			n, err = io.WriteString(dst, r.Domain)
+		l := len(r.Domain)
+		if l > 255 {
+			return 0, fmt.Errorf("domain too long")
 		}
-	}
-	total += int64(n)
-	if err != nil {
-		return total, err
+		buf = append(buf, byte(l))
+		buf = append(buf, r.Domain...)
+
+	default:
+		return 0, fmt.Errorf("invalid address type")
 	}
 
-	var portBuf [2]byte
-	binary.BigEndian.PutUint16(portBuf[:], r.Port)
-	n, err = dst.Write(portBuf[:])
-	total += int64(n)
+	// Port
+	buf = binary.BigEndian.AppendUint16(buf, r.Port)
 
-	return total, err
+	// Single write
+	n, err := dst.Write(buf)
+	return int64(n), err
 }
 
 // String returns a human-readable representation of the reply.

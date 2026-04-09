@@ -81,30 +81,33 @@ func (r *GSSAPIReply) ReadFrom(src io.Reader) (int64, error) {
 
 // WriteTo writes the GSSAPI reply to a writer.
 func (r *GSSAPIReply) WriteTo(dst io.Writer) (int64, error) {
-	if err := r.Validate(); err != nil {
-		return 0, err
-	}
-
 	if r.MsgType == GSSAPITypeAbort {
 		buf := [2]byte{r.Version, r.MsgType}
 		n, err := dst.Write(buf[:])
 		return int64(n), err
 	}
 
-	var hdr [4]byte
-	hdr[0] = r.Version
-	hdr[1] = r.MsgType
-	binary.BigEndian.PutUint16(hdr[2:], uint16(len(r.Token)))
+	var bufArr [512]byte
+	buf := bufArr[:0]
 
-	n, err := dst.Write(hdr[:])
-	total := int64(n)
-	if err != nil {
-		return total, err
+	tokenLen := len(r.Token)
+	totalLen := 4 + tokenLen
+
+	// Ensure capacity (so append never reallocates)
+	if totalLen > cap(bufArr) {
+		buf = make([]byte, 0, totalLen)
 	}
 
-	n2, err := dst.Write(r.Token)
-	total += int64(n2)
-	return total, err
+	buf = append(buf,
+		r.Version,
+		r.MsgType,
+		byte(tokenLen>>8),
+		byte(tokenLen),
+	)
+	buf = append(buf, r.Token...)
+
+	n, err := dst.Write(buf)
+	return int64(n), err
 }
 
 // String returns a human-readable representation.

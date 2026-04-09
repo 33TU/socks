@@ -116,9 +116,8 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		return
 	}
 
-	// Use reused reader/writer to reduce allocations
+	// Use reused reader to reduce allocations
 	reader := internal.GetReader(conn)
-	writer := internal.GetWriter(conn)
 	released := false
 
 	release := func() {
@@ -128,7 +127,6 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 
 		released = true
 		internal.PutReader(reader)
-		internal.PutWriter(writer)
 	}
 	defer release()
 
@@ -136,9 +134,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	var handshakeReq HandshakeRequest
 	if _, err := handshakeReq.ReadFrom(reader); err != nil {
 		// Send "No acceptable methods" reply for malformed handshake
-		var handshakeReply HandshakeReply
-		handshakeReply.Init(SocksVersion, MethodNoAcceptable)
-		handshakeReply.WriteTo(writer)
+		writeHandshake(conn, MethodNoAcceptable)
 		handler.OnError(ctx, conn, err)
 		return
 	}
@@ -146,17 +142,13 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	selectedMethod, err := handler.OnHandshake(ctx, conn, &handshakeReq)
 	if err != nil {
 		// Send "No acceptable methods" reply
-		var handshakeReply HandshakeReply
-		handshakeReply.Init(SocksVersion, MethodNoAcceptable)
-		handshakeReply.WriteTo(writer)
+		writeHandshake(conn, MethodNoAcceptable)
 		handler.OnError(ctx, conn, err)
 		return
 	}
 
 	// Send handshake reply
-	var handshakeReply HandshakeReply
-	handshakeReply.Init(SocksVersion, selectedMethod)
-	if _, err := handshakeReply.WriteTo(writer); err != nil {
+	if err := writeHandshake(conn, selectedMethod); err != nil {
 		handler.OnError(ctx, conn, err)
 		return
 	}
@@ -171,13 +163,13 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	case MethodNoAuth:
 		// No authentication required, proceed to request phase
 	case MethodUserPass:
-		if err := handleUserPassAuth(ctx, handler, conn, reader, writer); err != nil {
+		if err := handleUserPassAuth(ctx, handler, conn, reader); err != nil {
 			// Auth function already sent UserPassReply with failure status
 			handler.OnError(ctx, conn, err)
 			return
 		}
 	case MethodGSSAPI:
-		if err := handleGSSAPIAuth(ctx, handler, conn, reader, writer); err != nil {
+		if err := handleGSSAPIAuth(ctx, handler, conn, reader); err != nil {
 			// Auth function already sent GSSAPIReply with failure/abort
 			handler.OnError(ctx, conn, err)
 			return
@@ -207,7 +199,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 }
 
 // handleUserPassAuth handles username/password authentication.
-func handleUserPassAuth(ctx context.Context, handler ServerHandler, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer) error {
+func handleUserPassAuth(ctx context.Context, handler ServerHandler, conn net.Conn, reader *bufio.Reader) error {
 	var userPassReq UserPassRequest
 	if _, err := userPassReq.ReadFrom(reader); err != nil {
 		return err
@@ -221,7 +213,7 @@ func handleUserPassAuth(ctx context.Context, handler ServerHandler, conn net.Con
 
 	var userPassReply UserPassReply
 	userPassReply.Init(AuthVersionUserPass, status)
-	if _, err := userPassReply.WriteTo(writer); err != nil {
+	if _, err := userPassReply.WriteTo(conn); err != nil {
 		return err
 	}
 
@@ -233,7 +225,7 @@ func handleUserPassAuth(ctx context.Context, handler ServerHandler, conn net.Con
 }
 
 // handleGSSAPIAuth handles GSSAPI authentication.
-func handleGSSAPIAuth(ctx context.Context, handler ServerHandler, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer) error {
+func handleGSSAPIAuth(ctx context.Context, handler ServerHandler, conn net.Conn, reader *bufio.Reader) error {
 	// GSSAPI authentication can involve multiple round-trips
 	for {
 		var gssapiReq GSSAPIRequest
@@ -254,7 +246,7 @@ func handleGSSAPIAuth(ctx context.Context, handler ServerHandler, conn net.Conn,
 
 		var gssapiReply GSSAPIReply
 		gssapiReply.Init(GSSAPIVersion, msgType, responseToken)
-		if _, err := gssapiReply.WriteTo(writer); err != nil {
+		if _, err := gssapiReply.WriteTo(conn); err != nil {
 			return err
 		}
 
@@ -276,4 +268,12 @@ func writeReject(conn net.Conn, code byte) {
 	var resp Reply
 	resp.Init(SocksVersion, code, 0, AddrTypeIPv4, net.IPv4zero, "", 0)
 	resp.WriteTo(conn)
+}
+
+// writeHandshake sends a SOCKS5 handshake reply with the given code.
+func writeHandshake(conn net.Conn, code byte) error {
+	var handshakeReply HandshakeReply
+	handshakeReply.Init(SocksVersion, code)
+	_, err := handshakeReply.WriteTo(conn)
+	return err
 }

@@ -197,59 +197,35 @@ func (r *Request) ReadFrom(src io.Reader) (int64, error) {
 // WriteTo writes a SOCKS4 or SOCKS4a CONNECT/BIND request to a Writer.
 // Implements the io.WriterTo interface.
 func (r *Request) WriteTo(dst io.Writer) (int64, error) {
-	var (
-		hdr   [8]byte
-		total int64
+	var bufArr [512]byte // safe upper bound
+	buf := bufArr[:0]
+
+	// Header (8 bytes)
+	buf = append(buf,
+		r.Version,
+		r.Command,
+		byte(r.Port>>8),
+		byte(r.Port),
 	)
+	buf = append(buf, r.IP[:]...)
 
-	// write header
-	hdr[0] = r.Version
-	hdr[1] = r.Command
-	binary.BigEndian.PutUint16(hdr[2:4], r.Port)
-	copy(hdr[4:8], r.IP[:])
-
-	n, err := dst.Write(hdr[:])
-	total += int64(n)
-	if err != nil {
-		return total, err
+	// USERID (cstring)
+	if len(r.UserID) > 0 {
+		buf = append(buf, r.UserID...)
 	}
+	buf = append(buf, 0)
 
-	// write USERID
-	ns, err := writeCString(dst, r.UserID)
-	total += ns
-	if err != nil {
-		return total, err
-	}
-
-	// write DOMAIN
+	// DOMAIN (SOCKS4a only)
 	if r.IsSOCKS4a() {
-		ns, err := writeCString(dst, r.Domain)
-		total += ns
-		if err != nil {
-			return total, err
+		if len(r.Domain) > 0 {
+			buf = append(buf, r.Domain...)
 		}
+		buf = append(buf, 0)
 	}
 
-	return total, nil
-}
-
-func writeCString(dst io.Writer, s string) (int64, error) {
-	var (
-		total int64
-		null  = [1]byte{0}
-	)
-
-	if len(s) != 0 {
-		n, err := io.WriteString(dst, s)
-		total += int64(n)
-		if err != nil {
-			return total, err
-		}
-	}
-
-	n, err := dst.Write(null[:])
-	total += int64(n)
-	return total, err
+	// Single write
+	n, err := dst.Write(buf)
+	return int64(n), err
 }
 
 // String returns a string representation of the SOCKS4(a) Request.
