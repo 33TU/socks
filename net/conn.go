@@ -12,7 +12,6 @@ import (
 type CloseWriter interface {
 	net.Conn
 	CloseWrite() error
-	CloseRead() error
 }
 
 // CopyConn copies data between src and dst with a timeout and buffer size.

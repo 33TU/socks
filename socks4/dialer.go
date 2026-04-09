@@ -43,9 +43,9 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	}
 
 	// Set connection deadline from context if available
-	deadline, ok := ctx.Deadline()
-	if ok {
+	if deadline, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(deadline)
+		defer conn.SetDeadline(time.Time{})
 	}
 
 	// Handle context cancellation
@@ -70,11 +70,6 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if !reply.IsGranted() {
 		conn.Close()
 		return nil, replyToError(reply.Code)
-	}
-
-	// Reset deadline after successful SOCKS negotiation
-	if ok {
-		conn.SetDeadline(time.Time{})
 	}
 
 	return conn, nil
@@ -103,9 +98,9 @@ func (d *Dialer) BindContext(
 	}
 
 	// Set connection deadline from context if available
-	deadline, ok := ctx.Deadline()
-	if ok {
+	if deadline, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(deadline)
+		defer conn.SetDeadline(time.Time{})
 	}
 
 	// Handle context cancellation
@@ -129,11 +124,6 @@ func (d *Dialer) BindContext(
 	if !reply.IsGranted() {
 		conn.Close()
 		return nil, nil, nil, replyToError(reply.Code)
-	}
-
-	// Reset deadline after successful SOCKS negotiation
-	if ok {
-		conn.SetDeadline(time.Time{})
 	}
 
 	bindAddr := &net.TCPAddr{

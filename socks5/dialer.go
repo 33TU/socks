@@ -80,9 +80,9 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	}
 
 	// Set connection deadline from context if available
-	deadline, ok := ctx.Deadline()
-	if ok {
+	if deadline, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(deadline)
+		defer conn.SetDeadline(time.Time{})
 	}
 
 	// Handle context cancellation
@@ -114,11 +114,6 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		return nil, replyToError(reply.Reply)
 	}
 
-	// Reset deadline after successful SOCKS negotiation
-	if ok {
-		conn.SetDeadline(time.Time{})
-	}
-
 	return conn, nil
 }
 
@@ -144,9 +139,9 @@ func (d *Dialer) BindContext(
 	}
 
 	// Set connection deadline from context if available
-	deadline, ok := ctx.Deadline()
-	if ok {
+	if deadline, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(deadline)
+		defer conn.SetDeadline(time.Time{})
 	}
 
 	// Handle context cancellation
@@ -176,11 +171,6 @@ func (d *Dialer) BindContext(
 	if reply.Reply != RepSuccess {
 		conn.Close()
 		return nil, nil, nil, replyToError(reply.Reply)
-	}
-
-	// Reset deadline after successful SOCKS negotiation
-	if ok {
-		conn.SetDeadline(time.Time{})
 	}
 
 	addr := replyToTCPAddr(reply)
@@ -229,9 +219,9 @@ func (d *Dialer) UDPAssociateContext(
 	}
 
 	// Set connection deadline from context if available
-	deadline, ok := ctx.Deadline()
-	if ok {
+	if deadline, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(deadline)
+		defer conn.SetDeadline(time.Time{})
 	}
 
 	// Handle context cancellation
@@ -271,11 +261,6 @@ func (d *Dialer) UDPAssociateContext(
 		return nil, nil, replyToError(reply.Reply)
 	}
 
-	// Reset deadline after successful SOCKS negotiation
-	if ok {
-		conn.SetDeadline(time.Time{})
-	}
-
 	udpAddr := replyToUDPAddr(reply)
 
 	return conn, udpAddr, nil
@@ -295,9 +280,9 @@ func (d *Dialer) ResolveContext(ctx context.Context, network, host string) (net.
 	defer conn.Close()
 
 	// Set connection deadline from context if available
-	deadline, ok := ctx.Deadline()
-	if ok {
+	if deadline, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(deadline)
+		defer conn.SetDeadline(time.Time{})
 	}
 
 	// Handle context cancellation (ResolveContext uses defer conn.Close)
@@ -317,11 +302,6 @@ func (d *Dialer) ResolveContext(ctx context.Context, network, host string) (net.
 
 	if reply.Reply != RepSuccess {
 		return nil, replyToError(reply.Reply)
-	}
-
-	// Reset deadline after successful SOCKS negotiation
-	if ok {
-		conn.SetDeadline(time.Time{})
 	}
 
 	return reply.IP, nil
