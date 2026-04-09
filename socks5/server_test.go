@@ -1041,3 +1041,120 @@ func TestBaseServerHandler_Resolve_IPPassthrough(t *testing.T) {
 		})
 	}
 }
+
+func TestBaseServerHandler_UDPAssociate_Echo_WithDialer(t *testing.T) {
+	// ---- UDP echo server
+	udpEchoAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to resolve UDP address: %v", err)
+	}
+
+	udpEcho, err := net.ListenUDP("udp", udpEchoAddr)
+	if err != nil {
+		t.Fatalf("Failed to start UDP echo server: %v", err)
+	}
+	defer udpEcho.Close()
+
+	// Echo loop
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, clientAddr, err := udpEcho.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = udpEcho.WriteToUDP(buf[:n], clientAddr)
+		}
+	}()
+
+	// ---- SOCKS5 server
+	handler := &socks5.BaseServerHandler{
+		AllowUDPAssociate:   true,
+		UDPAssociateTimeout: 10 * time.Second,
+		RequestTimeout:      5 * time.Second,
+		SupportedMethods:    []byte{socks5.MethodNoAuth},
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	dialer := socks5.NewDialer(socksLn.Addr().String(), nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// ✅ FIX: MUST use "tcp" (control channel)
+	tcpConn, udpRelayAddr, err := dialer.UDPAssociateContext(ctx, "tcp", nil)
+	if err != nil {
+		t.Fatalf("Failed to establish UDP association: %v", err)
+	}
+	defer tcpConn.Close()
+
+	t.Logf("UDP relay address: %v", udpRelayAddr)
+	t.Logf("UDP echo server address: %v", udpEcho.LocalAddr())
+
+	// Give relay a moment to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	// ---- UDP client socket
+	clientUDP, err := net.DialUDP("udp", nil, udpRelayAddr)
+	if err != nil {
+		t.Fatalf("Failed to create client UDP connection: %v", err)
+	}
+	defer clientUDP.Close()
+
+	// ---- Build SOCKS5 UDP packet
+	testData := []byte("Hello UDP SOCKS5!")
+	echoServerAddr := udpEcho.LocalAddr().(*net.UDPAddr)
+
+	var udpPacket socks5.UDPPacket
+	udpPacket.Init(
+		[2]byte{0x00, 0x00},
+		0x00,
+		socks5.AddrTypeIPv4,
+		echoServerAddr.IP.To4(),
+		"",
+		uint16(echoServerAddr.Port),
+		testData,
+	)
+
+	var packetBuf bytes.Buffer
+	if _, err := udpPacket.WriteTo(&packetBuf); err != nil {
+		t.Fatalf("Failed to encode UDP packet: %v", err)
+	}
+
+	// ---- Send packet
+	if _, err := clientUDP.Write(packetBuf.Bytes()); err != nil {
+		t.Fatalf("Failed to send UDP packet: %v", err)
+	}
+
+	// ---- Read response
+	clientUDP.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	respBuf := make([]byte, 2048)
+	n, err := clientUDP.Read(respBuf)
+	if err != nil {
+		t.Fatalf("Failed to read UDP response: %v", err)
+	}
+
+	var respPacket socks5.UDPPacket
+	if _, err := respPacket.ReadFrom(bytes.NewReader(respBuf[:n])); err != nil {
+		t.Fatalf("Failed to parse UDP response packet: %v", err)
+	}
+
+	// ---- Assertions
+	if !bytes.Equal(respPacket.Data, testData) {
+		t.Fatalf("UDP echo mismatch: got %q, expected %q", respPacket.Data, testData)
+	}
+
+	if !respPacket.IP.Equal(echoServerAddr.IP.To4()) ||
+		respPacket.Port != uint16(echoServerAddr.Port) {
+		t.Errorf(
+			"Response address mismatch: got %s:%d, expected %s:%d",
+			respPacket.IP, respPacket.Port,
+			echoServerAddr.IP, echoServerAddr.Port,
+		)
+	}
+
+	t.Logf("UDP ASSOCIATE test passed (%d bytes echoed)", len(testData))
+}

@@ -277,31 +277,35 @@ func WriteSuccessReply(conn net.Conn, addr net.Addr) error {
 	var domain string
 	var addrType byte
 
-	// Extract IP and port, fallback to 0.0.0.0:0 if not TCP
-	if addr == nil {
-		ip = net.IPv4zero
-		port = 0
-	} else if tcpAddr, ok := addr.(*net.TCPAddr); ok {
-		ip = tcpAddr.IP
-		port = uint16(tcpAddr.Port)
-	} else {
-		// Fallback for non-TCP addresses
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		ip = a.IP
+		port = uint16(a.Port)
+
+	case *net.UDPAddr:
+		ip = a.IP
+		port = uint16(a.Port)
+
+	default:
 		ip = net.IPv4zero
 		port = 0
 	}
 
-	// Determine address type for response
-	if ip.To4() != nil {
+	// Replace 0.0.0.0 with actual interface IP
+	if ip.IsUnspecified() {
+		if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+			ip = tcpAddr.IP
+		}
+	}
+
+	// Determine address type
+	if ip4 := ip.To4(); ip4 != nil {
 		addrType = AddrTypeIPv4
-		ip = ip.To4()
-	} else if ip.To16() != nil {
+		ip = ip4
+	} else {
 		addrType = AddrTypeIPv6
-	} else {
-		addrType = AddrTypeIPv4
-		ip = net.IPv4zero
 	}
 
-	// Send success reply
 	var resp Reply
 	resp.Init(SocksVersion, RepSuccess, 0, addrType, ip, domain, port)
 	_, err := resp.WriteTo(conn)

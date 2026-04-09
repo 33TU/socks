@@ -149,23 +149,30 @@ func WriteSuccessReply(conn net.Conn, addr net.Addr) error {
 	var ip net.IP
 	var port uint16
 
-	// Extract IP and port, fallback to 0.0.0.0:0 if not TCP
-	if addr == nil {
-		ip = net.IPv4zero
-		port = 0
-	} else if tcpAddr, ok := addr.(*net.TCPAddr); ok {
-		ip = tcpAddr.IP.To4()
-		if ip == nil {
-			ip = net.IPv4zero // Fallback if not IPv4
-		}
-		port = uint16(tcpAddr.Port)
-	} else {
-		// Fallback for non-TCP addresses
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		ip = a.IP
+		port = uint16(a.Port)
+
+	case *net.UDPAddr:
+		ip = a.IP
+		port = uint16(a.Port)
+
+	default:
 		ip = net.IPv4zero
 		port = 0
 	}
 
-	// Send success reply
+	// SOCKS4 requires IPv4
+	ip = ip.To4()
+
+	// Fix unspecified address
+	if ip == nil || ip.IsUnspecified() {
+		if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+			ip = tcpAddr.IP.To4()
+		}
+	}
+
 	var resp Reply
 	resp.Init(0, RepGranted, port, ip)
 	_, err := resp.WriteTo(conn)
