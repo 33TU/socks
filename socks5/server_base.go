@@ -26,6 +26,8 @@ type BaseServerHandler struct {
 	AllowBind           bool
 	AllowUDPAssociate   bool
 	AllowResolve        bool
+	ResolveResolver     *net.Resolver
+	ResolvePreferIPv4   bool // When true, prefer IPv4 addresses over IPv6 for DNS resolution
 
 	SupportedMethods []byte
 
@@ -140,7 +142,7 @@ func (d *BaseServerHandler) OnResolve(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "RESOLVE request", "from", conn.RemoteAddr(), "target", addr)
 
-	if err := BaseOnResolve(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil {
+	if err := BaseOnResolve(ctx, conn, req, d.Dialer, d.ResolveResolver, d.ResolvePreferIPv4, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil {
 		return fmt.Errorf("RESOLVE failed for %s: %w", addr, err)
 	}
 
@@ -313,6 +315,109 @@ func BaseOnUDPAssociate(ctx context.Context, conn net.Conn, req *Request, timeou
 }
 
 // BaseOnResolve provides RESOLVE implementation
-func BaseOnResolve(ctx context.Context, conn net.Conn, req *Request, dialer socksnet.Dialer, dialTimeout, connTimeout time.Duration, bufferSize int) error {
+func BaseOnResolve(
+	ctx context.Context,
+	conn net.Conn,
+	req *Request,
+	dialer socksnet.Dialer, resolver *net.Resolver, preferIPv4 bool,
+	dialTimeout, connTimeout time.Duration,
+	bufferSize int,
+) error {
+	host := req.GetHost()
+
+	// Optional timeout for DNS resolution
+	if dialTimeout > 0 {
+		ctxDial, cancel := context.WithTimeout(ctx, dialTimeout)
+		defer cancel()
+		ctx = ctxDial
+	}
+
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+
+	ips, err := resolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		WriteRejectReply(conn, RepHostUnreachable)
+		return fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+	}
+
+	if len(ips) == 0 {
+		WriteRejectReply(conn, RepHostUnreachable)
+		return fmt.Errorf("no IP addresses found for host: %s", host)
+	}
+
+	// Select the best IP address based on preference
+	ip := ResolveSelectBestIP(ips, preferIPv4)
+
+	var addrType byte
+	if ip4 := ip.To4(); ip4 != nil {
+		addrType = AddrTypeIPv4
+		ip = ip4
+	} else {
+		addrType = AddrTypeIPv6
+	}
+
+	// Send success reply
+	var resp Reply
+	resp.Init(
+		SocksVersion,
+		RepSuccess,
+		0,
+		addrType,
+		ip,
+		"",
+		req.Port, // or 0
+	)
+
+	if _, err := resp.WriteTo(conn); err != nil {
+		return fmt.Errorf("failed to write resolve response: %w", err)
+	}
+
 	return nil
+}
+
+// ResolveSelectBestIP selects the most appropriate IP address from a list based on preferences
+func ResolveSelectBestIP(ips []net.IP, preferIPv4 bool) net.IP {
+	if len(ips) == 0 {
+		return nil
+	}
+
+	// If we have only one IP, return it
+	if len(ips) == 1 {
+		return ips[0]
+	}
+
+	var ipv4s, ipv6s []net.IP
+
+	// Separate IPv4 and IPv6 addresses
+	for _, ip := range ips {
+		if ip4 := ip.To4(); ip4 != nil {
+			ipv4s = append(ipv4s, ip)
+		} else {
+			ipv6s = append(ipv6s, ip)
+		}
+	}
+
+	// Apply preference
+	if preferIPv4 {
+		// Prefer IPv4: return first IPv4 if available, otherwise first IPv6
+		if len(ipv4s) > 0 {
+			return ipv4s[0]
+		}
+		if len(ipv6s) > 0 {
+			return ipv6s[0]
+		}
+	} else {
+		// Prefer IPv6: return first IPv6 if available, otherwise first IPv4
+		if len(ipv6s) > 0 {
+			return ipv6s[0]
+		}
+		if len(ipv4s) > 0 {
+			return ipv4s[0]
+		}
+	}
+
+	// Fallback: return first IP (shouldn't reach here given the checks above)
+	return ips[0]
 }

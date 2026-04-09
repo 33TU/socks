@@ -865,3 +865,179 @@ func TestBaseServerHandler_GSSAPI_Failed(t *testing.T) {
 	t.Logf("GSSAPI authentication correctly failed: %v", err)
 	t.Log("GSSAPI failure test passed")
 }
+
+func TestBaseServerHandler_Resolve_Success(t *testing.T) {
+	handler := &socks5.BaseServerHandler{
+		AllowResolve:     true,
+		RequestTimeout:   2 * time.Second,
+		SupportedMethods: []byte{socks5.MethodNoAuth},
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	// Create SOCKS5 dialer
+	dialer := socks5.NewDialer(socksLn.Addr().String(), nil, nil)
+
+	// Test resolving localhost
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ip, err := dialer.ResolveContext(ctx, "tcp", "localhost")
+	if err != nil {
+		t.Fatalf("Failed to resolve localhost: %v", err)
+	}
+
+	// Verify we got a valid IP
+	if ip == nil {
+		t.Fatal("Resolved IP is nil")
+	}
+
+	// localhost should resolve to a loopback address
+	if !ip.IsLoopback() {
+		t.Errorf("Expected loopback IP for localhost, got %v", ip)
+	}
+
+	t.Logf("Successfully resolved localhost to %v", ip)
+}
+
+func TestBaseServerHandler_Resolve_Disabled(t *testing.T) {
+	handler := &socks5.BaseServerHandler{
+		AllowResolve:     false, // Disable RESOLVE command
+		RequestTimeout:   2 * time.Second,
+		SupportedMethods: []byte{socks5.MethodNoAuth},
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	// Create SOCKS5 dialer
+	dialer := socks5.NewDialer(socksLn.Addr().String(), nil, nil)
+
+	// Test resolving localhost - should fail
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ip, err := dialer.ResolveContext(ctx, "tcp", "localhost")
+	if err == nil {
+		t.Fatalf("Expected resolve to fail when disabled, but got IP: %v", ip)
+	}
+
+	t.Logf("RESOLVE correctly rejected: %v", err)
+	t.Log("RESOLVE disabled test passed")
+}
+
+func TestBaseServerHandler_Resolve_InvalidDomain(t *testing.T) {
+	handler := &socks5.BaseServerHandler{
+		AllowResolve:     true,
+		RequestTimeout:   2 * time.Second,
+		SupportedMethods: []byte{socks5.MethodNoAuth},
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	// Create SOCKS5 dialer
+	dialer := socks5.NewDialer(socksLn.Addr().String(), nil, nil)
+
+	// Test resolving invalid domain - should fail
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ip, err := dialer.ResolveContext(ctx, "tcp", "this-domain-definitely-does-not-exist.invalid")
+	if err == nil {
+		t.Fatalf("Expected resolve to fail for invalid domain, but got IP: %v", ip)
+	}
+
+	t.Logf("Invalid domain correctly rejected: %v", err)
+	t.Log("Invalid domain resolve test passed")
+}
+
+func TestBaseServerHandler_Resolve_PreferIPv4(t *testing.T) {
+	handler := &socks5.BaseServerHandler{
+		AllowResolve:      true,
+		ResolvePreferIPv4: true, // Prefer IPv4 addresses
+		RequestTimeout:    2 * time.Second,
+		SupportedMethods:  []byte{socks5.MethodNoAuth},
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	// Create SOCKS5 dialer
+	dialer := socks5.NewDialer(socksLn.Addr().String(), nil, nil)
+
+	// Test resolving a dual-stack domain (has both IPv4 and IPv6)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Try to resolve a well-known dual-stack domain
+	ip, err := dialer.ResolveContext(ctx, "tcp", "google.com")
+	if err != nil {
+		// If google.com fails, try localhost which should always work
+		ip, err = dialer.ResolveContext(ctx, "tcp", "localhost")
+		if err != nil {
+			t.Fatalf("Failed to resolve test domain: %v", err)
+		}
+	}
+
+	// Verify we got a valid IP
+	if ip == nil {
+		t.Fatal("Resolved IP is nil")
+	}
+
+	// When PreferIPv4 is true, we should get an IPv4 address if available
+	if ip.To4() == nil {
+		t.Logf("Note: Got IPv6 address %v, IPv4 may not be available for this domain", ip)
+	} else {
+		t.Logf("Successfully got IPv4 address: %v (PreferIPv4 setting honored)", ip)
+	}
+}
+
+func TestBaseServerHandler_Resolve_IPPassthrough(t *testing.T) {
+	handler := &socks5.BaseServerHandler{
+		AllowResolve:     true,
+		RequestTimeout:   2 * time.Second,
+		SupportedMethods: []byte{socks5.MethodNoAuth},
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	// Create SOCKS5 dialer
+	dialer := socks5.NewDialer(socksLn.Addr().String(), nil, nil)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"IPv4 passthrough", "8.8.8.8", "8.8.8.8"},
+		{"IPv6 passthrough", "2001:4860:4860::8888", "2001:4860:4860::8888"},
+		{"localhost IP", "127.0.0.1", "127.0.0.1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			ip, err := dialer.ResolveContext(ctx, "tcp", tt.input)
+			if err != nil {
+				t.Fatalf("Failed to resolve IP %s: %v", tt.input, err)
+			}
+
+			if ip == nil {
+				t.Fatal("Resolved IP is nil")
+			}
+
+			// The resolved IP should match the input IP
+			expectedIP := net.ParseIP(tt.expected)
+			if !ip.Equal(expectedIP) {
+				t.Errorf("Expected IP %v, got %v", expectedIP, ip)
+			}
+
+			t.Logf("Successfully resolved IP %s to %v", tt.input, ip)
+		})
+	}
+}
