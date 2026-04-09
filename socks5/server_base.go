@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"slices"
@@ -333,100 +334,121 @@ func BaseOnUDPAssociate(
 
 	clientAddr := conn.RemoteAddr().(*net.TCPAddr)
 
-	// Stack buffer (max UDP size)
-	var inArr [1024 * 64]byte
-	inBuf := inArr[:]
+	// Use errgroup for coordinated goroutine management
+	g, ctx := errgroup.WithContext(ctx)
 
-	var outArr [1024 * 64]byte
-	w := bytes.NewBuffer(outArr[:0])
+	// Monitor TCP connection - when it closes, the UDP association should end
+	g.Go(func() error {
+		_, err := io.Copy(io.Discard, conn)
+		return err
+	})
 
-	for {
-		// Optional timeout
-		if timeout > 0 {
-			udpConn.SetReadDeadline(time.Now().Add(timeout))
-		}
+	// Handle UDP relay
+	g.Go(func() error {
+		// Stack buffer (max UDP size)
+		var inArr [1024 * 64]byte
+		inBuf := inArr[:]
 
-		n, addr, err := udpConn.ReadFromUDP(inBuf)
-		if err != nil {
-			return err
-		}
+		var outArr [1024 * 64]byte
+		w := bytes.NewBuffer(outArr[:0])
 
-		// Only accept packets from same client IP
-		if !addr.IP.Equal(clientAddr.IP) {
-			continue
-		}
-
-		// ---- Parse packet using UDPPacket
-		var pkt UDPPacket
-		if _, err := pkt.ReadFrom(bytes.NewReader(inBuf[:n])); err != nil {
-			// Ignore invalid / unsupported packets (including FRAG)
-			continue
-		}
-
-		// ---- Resolve target
-		var targetAddr *net.UDPAddr
-
-		switch pkt.AddrType {
-		case AddrTypeIPv4, AddrTypeIPv6:
-			targetAddr = &net.UDPAddr{
-				IP:   pkt.IP,
-				Port: int(pkt.Port),
+		for {
+			// Check if context is cancelled
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
 			}
 
-		case AddrTypeDomain:
-			addr, err := net.ResolveUDPAddr(
-				"udp",
-				net.JoinHostPort(pkt.Domain, fmt.Sprint(pkt.Port)),
-			)
+			// Optional timeout
+			if timeout > 0 {
+				udpConn.SetReadDeadline(time.Now().Add(timeout))
+			}
+
+			n, addr, err := udpConn.ReadFromUDP(inBuf)
+			if err != nil {
+				return err
+			}
+
+			// Only accept packets from same client IP
+			if !addr.IP.Equal(clientAddr.IP) {
+				continue
+			}
+
+			// Parse packet using UDPPacket
+			var pkt UDPPacket
+			if _, err := pkt.ReadFrom(bytes.NewReader(inBuf[:n])); err != nil {
+				// Ignore invalid / unsupported packets (including FRAG)
+				continue
+			}
+
+			// Resolve target
+			var targetAddr *net.UDPAddr
+
+			switch pkt.AddrType {
+			case AddrTypeIPv4, AddrTypeIPv6:
+				targetAddr = &net.UDPAddr{
+					IP:   pkt.IP,
+					Port: int(pkt.Port),
+				}
+
+			case AddrTypeDomain:
+				addr, err := net.ResolveUDPAddr(
+					"udp",
+					net.JoinHostPort(pkt.Domain, fmt.Sprint(pkt.Port)),
+				)
+				if err != nil {
+					continue
+				}
+				targetAddr = addr
+
+			default:
+				continue
+			}
+
+			// Send payload to target
+			if _, err := udpConn.WriteToUDP(pkt.Data, targetAddr); err != nil {
+				continue
+			}
+
+			// Read response from target
+			n2, respAddr, err := udpConn.ReadFromUDP(inBuf)
 			if err != nil {
 				continue
 			}
-			targetAddr = addr
 
-		default:
-			continue
+			// Build response packet
+			var resp UDPPacket
+
+			addrType := AddrTypeIPv6
+			ip := respAddr.IP
+			if ip4 := ip.To4(); ip4 != nil {
+				addrType = AddrTypeIPv4
+				ip = ip4
+			}
+
+			resp.Init(
+				[2]byte{0x00, 0x00},
+				0x00, // no fragmentation
+				byte(addrType),
+				ip,
+				"",
+				uint16(respAddr.Port),
+				inBuf[:n2],
+			)
+
+			// Encode response (avoid heap alloc)
+			w.Reset()
+			if _, err := resp.WriteTo(w); err != nil {
+				continue
+			}
+
+			// Send back to client
+			udpConn.WriteToUDP(w.Bytes(), addr)
 		}
+	})
 
-		// ---- Send payload to target
-		if _, err := udpConn.WriteToUDP(pkt.Data, targetAddr); err != nil {
-			continue
-		}
-
-		// ---- Read response from target
-		n2, respAddr, err := udpConn.ReadFromUDP(inBuf)
-		if err != nil {
-			continue
-		}
-
-		// ---- Build response packet
-		var resp UDPPacket
-
-		addrType := AddrTypeIPv6
-		ip := respAddr.IP
-		if ip4 := ip.To4(); ip4 != nil {
-			addrType = AddrTypeIPv4
-			ip = ip4
-		}
-
-		resp.Init(
-			[2]byte{0x00, 0x00},
-			0x00, // no fragmentation
-			byte(addrType),
-			ip,
-			"",
-			uint16(respAddr.Port),
-			inBuf[:n2],
-		)
-
-		// ---- Encode response (avoid heap alloc)
-		w.Reset()
-		if _, err := resp.WriteTo(w); err != nil {
-			continue
-		}
-
-		// ---- Send back to client
-		udpConn.WriteToUDP(w.Bytes(), addr)
-	}
+	return g.Wait()
 }
 
 // BaseOnResolve provides RESOLVE implementation
