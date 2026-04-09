@@ -104,7 +104,6 @@ func Test_GSSAPIReply_ReadFrom_Abort(t *testing.T) {
 }
 
 func Test_GSSAPIReply_ReadFrom_EmptyToken(t *testing.T) {
-	// ✅ Empty token is VALID
 	data := []byte{
 		socks5.GSSAPIVersion,
 		socks5.GSSAPITypeReply,
@@ -121,7 +120,7 @@ func Test_GSSAPIReply_ReadFrom_EmptyToken(t *testing.T) {
 		t.Errorf("expected 4 bytes read, got %d", n)
 	}
 
-	if r.Token != nil && len(r.Token) != 0 {
+	if len(r.Token) != 0 {
 		t.Errorf("expected empty token, got %x", r.Token)
 	}
 }

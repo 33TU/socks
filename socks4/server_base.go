@@ -47,10 +47,8 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 
 	slog.InfoContext(ctx, "BIND request", "from", conn.RemoteAddr(), "target", req.Addr())
 
-	err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize)
-	if err != nil {
-		slog.ErrorContext(ctx, "BIND failed", "error", err)
-		return err
+	if err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize); err != nil {
+		return fmt.Errorf("BIND failed: %w", err)
 	}
 
 	slog.InfoContext(ctx, "BIND completed", "from", conn.RemoteAddr())
@@ -66,10 +64,8 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "CONNECT request", "from", conn.RemoteAddr(), "target", addr)
 
-	err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize)
-	if err != nil {
-		slog.ErrorContext(ctx, "CONNECT failed", "error", err, "target", addr)
-		return err
+	if err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil {
+		return fmt.Errorf("CONNECT failed to %s: %w", addr, err)
 	}
 
 	slog.InfoContext(ctx, "CONNECT completed", "from", conn.RemoteAddr(), "target", addr)
@@ -94,8 +90,11 @@ func (d *BaseServerHandler) OnUserID(ctx context.Context, conn net.Conn, userID 
 }
 
 func (d *BaseServerHandler) OnRequest(ctx context.Context, conn net.Conn, req *Request) error {
-	slog.InfoContext(ctx, "received request", "from", conn.RemoteAddr(), "request", req)
-	return BaseOnRequest(ctx, d, conn, req)
+	err := BaseOnRequest(ctx, d, conn, req)
+	if err != nil {
+		slog.ErrorContext(ctx, "request handling failed", "error", err, "from", conn.RemoteAddr(), "request", req)
+	}
+	return err
 }
 
 // BaseOnRequest provides request handling logic for both CONNECT and BIND commands.

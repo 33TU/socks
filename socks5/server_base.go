@@ -74,8 +74,11 @@ func (d *BaseServerHandler) OnAuthGSSAPI(ctx context.Context, conn net.Conn, tok
 }
 
 func (d *BaseServerHandler) OnRequest(ctx context.Context, conn net.Conn, req *Request) error {
-	slog.InfoContext(ctx, "received request", "from", conn.RemoteAddr(), "request", req)
-	return BaseOnRequest(ctx, d, conn, req)
+	err := BaseOnRequest(ctx, d, conn, req)
+	if err != nil {
+		slog.ErrorContext(ctx, "request handling failed", "error", err, "from", conn.RemoteAddr(), "request", req)
+	}
+	return err
 }
 
 func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *Request) error {
@@ -87,10 +90,8 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "CONNECT request", "from", conn.RemoteAddr(), "target", addr)
 
-	err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize)
-	if err != nil {
-		slog.ErrorContext(ctx, "CONNECT failed", "error", err, "target", addr)
-		return err
+	if err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil {
+		return fmt.Errorf("CONNECT failed to %s: %w", addr, err)
 	}
 
 	slog.InfoContext(ctx, "CONNECT completed", "from", conn.RemoteAddr(), "target", addr)
@@ -105,10 +106,8 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 
 	slog.InfoContext(ctx, "BIND request", "from", conn.RemoteAddr(), "target", req.Addr())
 
-	err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize)
-	if err != nil {
-		slog.ErrorContext(ctx, "BIND failed", "error", err)
-		return err
+	if err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize); err != nil {
+		return fmt.Errorf("BIND failed: %w", err)
 	}
 
 	slog.InfoContext(ctx, "BIND completed", "from", conn.RemoteAddr())
@@ -124,10 +123,8 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 	addr := req.Addr()
 	slog.InfoContext(ctx, "UDP ASSOCIATE request", "from", conn.RemoteAddr(), "target", addr)
 
-	err := BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.ConnectBufferSize)
-	if err != nil {
-		slog.ErrorContext(ctx, "UDP ASSOCIATE failed", "error", err, "target", addr)
-		return err
+	if err := BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.ConnectBufferSize); err != nil {
+		return fmt.Errorf("UDP ASSOCIATE failed to %s: %w", addr, err)
 	}
 
 	slog.InfoContext(ctx, "UDP ASSOCIATE completed", "from", conn.RemoteAddr(), "target", addr)
@@ -143,10 +140,8 @@ func (d *BaseServerHandler) OnResolve(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "RESOLVE request", "from", conn.RemoteAddr(), "target", addr)
 
-	err := BaseOnResolve(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize)
-	if err != nil {
-		slog.ErrorContext(ctx, "RESOLVE failed", "error", err, "target", addr)
-		return err
+	if err := BaseOnResolve(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil {
+		return fmt.Errorf("RESOLVE failed for %s: %w", addr, err)
 	}
 
 	slog.InfoContext(ctx, "RESOLVE completed", "from", conn.RemoteAddr(), "target", addr)
