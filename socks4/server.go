@@ -115,6 +115,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// Read SOCKS4 request using pooled reader
 	var req Request
 	if _, err := req.ReadFrom(reader); err != nil {
+		writeReject(conn, RepRejected)
 		handler.OnError(ctx, conn, err)
 		return
 	}

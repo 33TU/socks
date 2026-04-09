@@ -135,6 +135,10 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// Phase 1: Handshake (method negotiation)
 	var handshakeReq HandshakeRequest
 	if _, err := handshakeReq.ReadFrom(reader); err != nil {
+		// Send "No acceptable methods" reply for malformed handshake
+		var handshakeReply HandshakeReply
+		handshakeReply.Init(SocksVersion, MethodNoAcceptable)
+		handshakeReply.WriteTo(writer)
 		handler.OnError(ctx, conn, err)
 		return
 	}
@@ -168,15 +172,18 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		// No authentication required, proceed to request phase
 	case MethodUserPass:
 		if err := handleUserPassAuth(ctx, handler, conn, reader, writer); err != nil {
+			// Auth function already sent UserPassReply with failure status
 			handler.OnError(ctx, conn, err)
 			return
 		}
 	case MethodGSSAPI:
 		if err := handleGSSAPIAuth(ctx, handler, conn, reader, writer); err != nil {
+			// Auth function already sent GSSAPIReply with failure/abort
 			handler.OnError(ctx, conn, err)
 			return
 		}
 	default:
+		writeReject(conn, RepGeneralFailure)
 		handler.OnError(ctx, conn, fmt.Errorf("unsupported authentication method: %d", selectedMethod))
 		return
 	}
@@ -184,6 +191,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// Phase 3: Request processing
 	var req Request
 	if _, err := req.ReadFrom(reader); err != nil {
+		writeReject(conn, RepGeneralFailure)
 		handler.OnError(ctx, conn, err)
 		return
 	}
