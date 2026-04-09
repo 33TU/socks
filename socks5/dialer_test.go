@@ -417,16 +417,16 @@ func TestDialer_Connect_ContextCancel(t *testing.T) {
 
 // Mock GSSAPI contexts for testing
 
-// mockGSSAPIContext_Success simulates successful single-round GSSAPI auth
-type mockGSSAPIContext_Success struct {
+// dialerMockGSSAPIContext_Success simulates successful single-round GSSAPI auth
+type dialerMockGSSAPIContext_Success struct {
 	complete bool
 }
 
-func (m *mockGSSAPIContext_Success) InitSecContext() ([]byte, error) {
+func (m *dialerMockGSSAPIContext_Success) InitSecContext() ([]byte, error) {
 	return []byte("test-token-init"), nil
 }
 
-func (m *mockGSSAPIContext_Success) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
+func (m *dialerMockGSSAPIContext_Success) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
 	if string(serverToken) == "server-success-token" {
 		m.complete = true
 		return nil, true, nil // No response token needed, auth complete
@@ -434,22 +434,22 @@ func (m *mockGSSAPIContext_Success) AcceptSecContext(serverToken []byte) ([]byte
 	return nil, false, fmt.Errorf("unexpected server token: %s", serverToken)
 }
 
-func (m *mockGSSAPIContext_Success) IsComplete() bool {
+func (m *dialerMockGSSAPIContext_Success) IsComplete() bool {
 	return m.complete
 }
 
-// mockGSSAPIContext_MultiRound simulates multi-round GSSAPI exchange
-type mockGSSAPIContext_MultiRound struct {
+// dialerMockGSSAPIContext_MultiRound simulates multi-round GSSAPI exchange
+type dialerMockGSSAPIContext_MultiRound struct {
 	round    int
 	complete bool
 }
 
-func (m *mockGSSAPIContext_MultiRound) InitSecContext() ([]byte, error) {
+func (m *dialerMockGSSAPIContext_MultiRound) InitSecContext() ([]byte, error) {
 	m.round = 1
 	return []byte("init-token-round1"), nil
 }
 
-func (m *mockGSSAPIContext_MultiRound) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
+func (m *dialerMockGSSAPIContext_MultiRound) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
 	switch m.round {
 	case 1:
 		if string(serverToken) == "server-round1-token" {
@@ -468,22 +468,22 @@ func (m *mockGSSAPIContext_MultiRound) AcceptSecContext(serverToken []byte) ([]b
 	}
 }
 
-func (m *mockGSSAPIContext_MultiRound) IsComplete() bool {
+func (m *dialerMockGSSAPIContext_MultiRound) IsComplete() bool {
 	return m.complete
 }
 
-// mockGSSAPIContext_Failure simulates GSSAPI auth failure
-type mockGSSAPIContext_Failure struct{}
+// dialerMockGSSAPIContext_Failure simulates GSSAPI auth failure
+type dialerMockGSSAPIContext_Failure struct{}
 
-func (m *mockGSSAPIContext_Failure) InitSecContext() ([]byte, error) {
+func (m *dialerMockGSSAPIContext_Failure) InitSecContext() ([]byte, error) {
 	return []byte("bad-token"), nil
 }
 
-func (m *mockGSSAPIContext_Failure) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
+func (m *dialerMockGSSAPIContext_Failure) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
 	return nil, false, fmt.Errorf("mock GSSAPI auth failed")
 }
 
-func (m *mockGSSAPIContext_Failure) IsComplete() bool {
+func (m *dialerMockGSSAPIContext_Failure) IsComplete() bool {
 	return false
 }
 
@@ -549,7 +549,7 @@ func TestDialer_Connect_WithGSSAPI_Success(t *testing.T) {
 	defer stop()
 
 	gssapiAuth := &socks5.GSSAPIAuth{
-		Context: &mockGSSAPIContext_Success{},
+		Context: &dialerMockGSSAPIContext_Success{},
 	}
 	d := socks5.NewDialerWithGSSAPI(proxyAddr, nil, gssapiAuth, nil)
 	conn, err := d.DialContext(context.Background(), "tcp", "127.0.0.1:1234")
@@ -647,7 +647,7 @@ func TestDialer_Connect_WithGSSAPI_MultiRound(t *testing.T) {
 	defer stop()
 
 	gssapiAuth := &socks5.GSSAPIAuth{
-		Context: &mockGSSAPIContext_MultiRound{},
+		Context: &dialerMockGSSAPIContext_MultiRound{},
 	}
 	d := socks5.NewDialerWithGSSAPI(proxyAddr, nil, gssapiAuth, nil)
 	conn, err := d.DialContext(context.Background(), "tcp", "127.0.0.1:1234")
@@ -701,7 +701,7 @@ func TestDialer_Connect_WithGSSAPI_Failed(t *testing.T) {
 	defer stop()
 
 	gssapiAuth := &socks5.GSSAPIAuth{
-		Context: &mockGSSAPIContext_Failure{},
+		Context: &dialerMockGSSAPIContext_Failure{},
 	}
 	d := socks5.NewDialerWithGSSAPI(proxyAddr, nil, gssapiAuth, nil)
 	_, err := d.DialContext(context.Background(), "tcp", "127.0.0.1:1234")

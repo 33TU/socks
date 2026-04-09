@@ -599,3 +599,269 @@ func TestBaseServerHandler_MethodNegotiation(t *testing.T) {
 		})
 	}
 }
+
+// serverMockGSSAPIContext_Success implements a mock GSSAPI context for testing
+type serverMockGSSAPIContext_Success struct {
+	complete bool
+}
+
+func (m *serverMockGSSAPIContext_Success) InitSecContext() ([]byte, error) {
+	// Return initial token
+	return []byte("mock-initial-token"), nil
+}
+
+func (m *serverMockGSSAPIContext_Success) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
+	// When server returns empty token, authentication is complete
+	if len(serverToken) == 0 {
+		m.complete = true
+		return nil, true, nil
+	}
+	// For any other token, just complete the authentication
+	m.complete = true
+	return nil, true, nil
+}
+
+func (m *serverMockGSSAPIContext_Success) IsComplete() bool {
+	return m.complete
+}
+
+// serverMockGSSAPIContext_MultiRound simulates multi-round GSSAPI exchange
+type serverMockGSSAPIContext_MultiRound struct {
+	round    int
+	complete bool
+}
+
+func (m *serverMockGSSAPIContext_MultiRound) InitSecContext() ([]byte, error) {
+	m.round = 1
+	return []byte("init-token-round1"), nil
+}
+
+func (m *serverMockGSSAPIContext_MultiRound) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
+	switch m.round {
+	case 1:
+		if string(serverToken) == "server-round1-token" {
+			m.round = 2
+			return []byte("client-round2-token"), false, nil
+		}
+		return nil, false, fmt.Errorf("unexpected round 1 token: %s", serverToken)
+	case 2:
+		if string(serverToken) == "server-round2-token" {
+			m.round = 3
+			return []byte("client-round3-token"), false, nil
+		}
+		return nil, false, fmt.Errorf("unexpected round 2 token: %s", serverToken)
+	case 3:
+		if len(serverToken) == 0 {
+			m.complete = true
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("unexpected round 3 token: %s", serverToken)
+	default:
+		return nil, false, fmt.Errorf("unexpected round: %d", m.round)
+	}
+}
+
+func (m *serverMockGSSAPIContext_MultiRound) IsComplete() bool {
+	return m.complete
+}
+
+// serverMockGSSAPIContext_Failure simulates GSSAPI auth failure
+type serverMockGSSAPIContext_Failure struct{}
+
+func (m *serverMockGSSAPIContext_Failure) InitSecContext() ([]byte, error) {
+	return []byte("bad-token"), nil
+}
+
+func (m *serverMockGSSAPIContext_Failure) AcceptSecContext(serverToken []byte) ([]byte, bool, error) {
+	return nil, false, fmt.Errorf("mock GSSAPI auth failed")
+}
+
+func (m *serverMockGSSAPIContext_Failure) IsComplete() bool {
+	return false
+}
+
+func TestBaseServerHandler_GSSAPI_Connect(t *testing.T) {
+	echoLn := echoServer(t)
+	defer echoLn.Close()
+
+	handler := &socks5.BaseServerHandler{
+		RequestTimeout:     2 * time.Second,
+		ConnectConnTimeout: 2 * time.Second,
+		AllowConnect:       true,
+		SupportedMethods:   []byte{socks5.MethodGSSAPI},
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	// ---- GSSAPI mock context (client side)
+	gssapiAuth := &socks5.GSSAPIAuth{
+		Context: &serverMockGSSAPIContext_Success{},
+	}
+
+	dialer := socks5.NewDialerWithGSSAPI(
+		socksLn.Addr().String(),
+		nil, // no user/pass
+		gssapiAuth,
+		nil,
+	)
+
+	conn, err := dialer.DialContext(
+		context.Background(),
+		"tcp",
+		echoLn.Addr().String(),
+	)
+	if err != nil {
+		t.Fatalf("DialContext failed: %v", err)
+	}
+	defer conn.Close()
+
+	// ---- Echo test
+	payload := []byte("ping")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	buf := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	if !bytes.Equal(payload, buf) {
+		t.Fatalf("echo mismatch: got %q", buf)
+	}
+}
+
+func TestBaseServerHandler_GSSAPI_MultiRound(t *testing.T) {
+	echoLn := echoServer(t)
+	defer echoLn.Close()
+
+	// Server-side GSSAPI authenticator for 3-round multi-round exchange
+	round := 0
+	gssapiAuthenticator := func(ctx context.Context, token []byte) ([]byte, error) {
+		round++
+		switch round {
+		case 1:
+			if string(token) == "init-token-round1" {
+				return []byte("server-round1-token"), nil
+			}
+			return nil, fmt.Errorf("unexpected round 1 token: %s", token)
+		case 2:
+			if string(token) == "client-round2-token" {
+				return []byte("server-round2-token"), nil
+			}
+			return nil, fmt.Errorf("unexpected round 2 token: %s", token)
+		case 3:
+			if string(token) == "client-round3-token" {
+				// Return empty token to complete authentication
+				// The 3-round token exchange has established the security context
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unexpected round 3 token: %s", token)
+		default:
+			return nil, fmt.Errorf("unexpected round: %d", round)
+		}
+	}
+
+	handler := &socks5.BaseServerHandler{
+		RequestTimeout:      2 * time.Second,
+		ConnectConnTimeout:  2 * time.Second,
+		AllowConnect:        true,
+		SupportedMethods:    []byte{socks5.MethodGSSAPI},
+		GSSAPIAuthenticator: gssapiAuthenticator,
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	// ---- GSSAPI mock context for multi-round (client side)
+	gssapiAuth := &socks5.GSSAPIAuth{
+		Context: &serverMockGSSAPIContext_MultiRound{},
+	}
+
+	dialer := socks5.NewDialerWithGSSAPI(
+		socksLn.Addr().String(),
+		nil, // no user/pass
+		gssapiAuth,
+		nil,
+	)
+
+	conn, err := dialer.DialContext(
+		context.Background(),
+		"tcp",
+		echoLn.Addr().String(),
+	)
+	if err != nil {
+		t.Fatalf("DialContext with multi-round GSSAPI failed: %v", err)
+	}
+	defer conn.Close()
+
+	// ---- Echo test with larger payload
+	payload := genRandom(1024) // 1KB test
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	buf := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	if !bytes.Equal(payload, buf) {
+		t.Fatalf("echo mismatch in multi-round GSSAPI")
+	}
+
+	t.Log("3-round GSSAPI authentication test passed")
+}
+
+func TestBaseServerHandler_GSSAPI_Failed(t *testing.T) {
+	echoLn := echoServer(t)
+	defer echoLn.Close()
+
+	// Server-side GSSAPI authenticator that always fails
+	gssapiAuthenticator := func(ctx context.Context, token []byte) ([]byte, error) {
+		return nil, fmt.Errorf("server-side GSSAPI authentication failed")
+	}
+
+	handler := &socks5.BaseServerHandler{
+		RequestTimeout:      2 * time.Second,
+		ConnectConnTimeout:  2 * time.Second,
+		AllowConnect:        true,
+		SupportedMethods:    []byte{socks5.MethodGSSAPI},
+		GSSAPIAuthenticator: gssapiAuthenticator,
+	}
+
+	socksLn := startSOCKS5Server(t, handler)
+	defer socksLn.Close()
+
+	// ---- GSSAPI mock context that fails (client side)
+	gssapiAuth := &socks5.GSSAPIAuth{
+		Context: &serverMockGSSAPIContext_Failure{},
+	}
+
+	dialer := socks5.NewDialerWithGSSAPI(
+		socksLn.Addr().String(),
+		nil, // no user/pass
+		gssapiAuth,
+		nil,
+	)
+
+	conn, err := dialer.DialContext(
+		context.Background(),
+		"tcp",
+		echoLn.Addr().String(),
+	)
+	if err == nil {
+		conn.Close()
+		t.Fatalf("Expected GSSAPI authentication to fail but it succeeded")
+	}
+
+	// Verify it's actually a GSSAPI authentication error
+	if !bytes.Contains([]byte(err.Error()), []byte("GSSAPI")) &&
+		!bytes.Contains([]byte(err.Error()), []byte("auth")) {
+		t.Logf("Warning: Error doesn't seem to be GSSAPI related: %v", err)
+	}
+
+	t.Logf("GSSAPI authentication correctly failed: %v", err)
+	t.Log("GSSAPI failure test passed")
+}

@@ -10,7 +10,7 @@ import (
 // Errors for GSSAPI authentication replies.
 var (
 	ErrInvalidGSSAPIReplyVersion = errors.New("invalid GSSAPI reply version (must be 1)")
-	ErrEmptyGSSAPIReplyToken     = errors.New("GSSAPI reply token cannot be empty")
+	ErrInvalidGSSAPIMsgType      = errors.New("invalid GSSAPI message type")
 	ErrGSSAPIReplyTooLong        = errors.New("GSSAPI reply token too long (max 65535)")
 )
 
@@ -18,7 +18,7 @@ var (
 type GSSAPIReply struct {
 	Version byte   // VER (should always be 0x01)
 	MsgType byte   // MTYP (0x02 = reply token, 0xFF = failure)
-	Token   []byte // TOKEN (optional; none if MTYP=0xFF)
+	Token   []byte // TOKEN (optional; may be empty for final success)
 }
 
 // Init initializes the GSSAPI reply.
@@ -30,24 +30,31 @@ func (r *GSSAPIReply) Init(version, msgType byte, token []byte) {
 
 // Validate checks for protocol correctness.
 func (r *GSSAPIReply) Validate() error {
-	if r.Version != 0x01 {
+	if r.Version != GSSAPIVersion {
 		return ErrInvalidGSSAPIReplyVersion
 	}
-	if r.MsgType == GSSAPITypeAbort {
-		return nil
+
+	switch r.MsgType {
+	case GSSAPITypeReply:
+		// Token MAY be empty (final step)
+	case GSSAPITypeAbort:
+		// Token should be empty (but we don't strictly enforce)
+	default:
+		return ErrInvalidGSSAPIMsgType
 	}
-	if len(r.Token) == 0 {
-		return ErrEmptyGSSAPIReplyToken
-	}
+
 	if len(r.Token) > 65535 {
 		return ErrGSSAPIReplyTooLong
 	}
+
 	return nil
 }
 
 // ReadFrom reads a GSSAPI reply from a reader.
 func (r *GSSAPIReply) ReadFrom(src io.Reader) (int64, error) {
 	var hdr [4]byte
+
+	// Read VER + MTYP
 	n, err := io.ReadFull(src, hdr[:2])
 	if err != nil {
 		return int64(n), err
@@ -55,18 +62,26 @@ func (r *GSSAPIReply) ReadFrom(src io.Reader) (int64, error) {
 
 	r.Version = hdr[0]
 	r.MsgType = hdr[1]
+
+	// Abort message has no token
 	if r.MsgType == GSSAPITypeAbort {
-		return int64(n), nil
+		r.Token = nil
+		return int64(n), r.Validate()
 	}
 
+	// Read token length
 	n2, err := io.ReadFull(src, hdr[2:4])
 	n += n2
 	if err != nil {
 		return int64(n), err
 	}
+
 	length := binary.BigEndian.Uint16(hdr[2:4])
+
+	// Zero-length token is valid (final step)
 	if length == 0 {
-		return int64(n), ErrEmptyGSSAPIReplyToken
+		r.Token = nil
+		return int64(n), r.Validate()
 	}
 
 	token := make([]byte, length)
@@ -75,25 +90,30 @@ func (r *GSSAPIReply) ReadFrom(src io.Reader) (int64, error) {
 	if err != nil {
 		return total, err
 	}
+
 	r.Token = token
 	return total, r.Validate()
 }
 
 // WriteTo writes the GSSAPI reply to a writer.
 func (r *GSSAPIReply) WriteTo(dst io.Writer) (int64, error) {
+	if err := r.Validate(); err != nil {
+		return 0, err
+	}
+
+	// Abort message: only VER + MTYP
 	if r.MsgType == GSSAPITypeAbort {
 		buf := [2]byte{r.Version, r.MsgType}
 		n, err := dst.Write(buf[:])
 		return int64(n), err
 	}
 
+	tokenLen := len(r.Token)
+
 	var bufArr [512]byte
 	buf := bufArr[:0]
 
-	tokenLen := len(r.Token)
 	totalLen := 4 + tokenLen
-
-	// Ensure capacity (so append never reallocates)
 	if totalLen > cap(bufArr) {
 		buf = make([]byte, 0, totalLen)
 	}
