@@ -171,22 +171,17 @@ func (d *BaseServerHandler) GetSupportedMethods() []byte {
 
 // BaseOnHandshake provides a default handshake implementation that selects the first matching authentication method.
 func BaseOnHandshake(ctx context.Context, conn net.Conn, req *HandshakeRequest, supportedMethods []byte) (byte, error) {
-	var selectedMethod byte = MethodNoAcceptable
-
 	for _, clientMethod := range req.Methods {
 		if slices.Contains(supportedMethods, clientMethod) {
-			selectedMethod = clientMethod
-		}
-		if selectedMethod != MethodNoAcceptable {
-			break
+			return clientMethod, nil
 		}
 	}
 
-	if selectedMethod == MethodNoAcceptable {
-		return MethodNoAcceptable, fmt.Errorf("no acceptable authentication methods: client=%v server=%v", req.Methods, supportedMethods)
-	}
-
-	return selectedMethod, nil
+	return MethodNoAcceptable, fmt.Errorf(
+		"no acceptable authentication methods: client=%v server=%v",
+		req.Methods,
+		supportedMethods,
+	)
 }
 
 // BaseOnRequest provides request handling logic for CONNECT, BIND, UDP ASSOCIATE, and RESOLVE commands.
@@ -235,27 +230,8 @@ func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer sock
 	}
 	defer remote.Close()
 
-	// Get bound address from the connection
-	boundAddr := remote.LocalAddr().(*net.TCPAddr)
-	boundIP := boundAddr.IP
-	var boundDomain string
-	var addrType byte
-
-	// Determine address type for response
-	if boundIP.To4() != nil {
-		addrType = AddrTypeIPv4
-		boundIP = boundIP.To4()
-	} else if boundIP.To16() != nil {
-		addrType = AddrTypeIPv6
-	} else {
-		addrType = AddrTypeIPv4
-		boundIP = net.IPv4zero
-	}
-
 	// Send success reply with bound address
-	var resp Reply
-	resp.Init(SocksVersion, RepSuccess, 0, addrType, boundIP, boundDomain, uint16(boundAddr.Port))
-	if _, err := resp.WriteTo(conn); err != nil {
+	if err := WriteSuccessReply(conn, remote.LocalAddr()); err != nil {
 		return fmt.Errorf("failed to write connect response: %w", err)
 	}
 
@@ -287,27 +263,8 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	}
 	defer listener.Close()
 
-	// Get the bound address
-	boundAddr := listener.Addr().(*net.TCPAddr)
-	boundIP := boundAddr.IP
-	var boundDomain string
-	var addrType byte
-
-	// Determine address type for response
-	if boundIP.To4() != nil {
-		addrType = AddrTypeIPv4
-		boundIP = boundIP.To4()
-	} else if boundIP.To16() != nil {
-		addrType = AddrTypeIPv6
-	} else {
-		addrType = AddrTypeIPv4
-		boundIP = net.IPv4zero
-	}
-
 	// Send first reply with bound address/port
-	var resp Reply
-	resp.Init(SocksVersion, RepSuccess, 0, addrType, boundIP, boundDomain, uint16(boundAddr.Port))
-	if _, err := resp.WriteTo(conn); err != nil {
+	if err := WriteSuccessReply(conn, listener.Addr()); err != nil {
 		return fmt.Errorf("failed to write bind response: %w", err)
 	}
 
@@ -333,24 +290,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	}
 
 	// Send second reply indicating successful connection
-	var resp2 Reply
-	incomingIP := incomingAddr.IP
-	var incomingDomain string
-	var incomingAddrType byte
-
-	// Determine address type for incoming connection
-	if incomingIP.To4() != nil {
-		incomingAddrType = AddrTypeIPv4
-		incomingIP = incomingIP.To4()
-	} else if incomingIP.To16() != nil {
-		incomingAddrType = AddrTypeIPv6
-	} else {
-		incomingAddrType = AddrTypeIPv4
-		incomingIP = net.IPv4zero
-	}
-
-	resp2.Init(SocksVersion, RepSuccess, 0, incomingAddrType, incomingIP, incomingDomain, uint16(incomingAddr.Port))
-	if _, err := resp2.WriteTo(conn); err != nil {
+	if err := WriteSuccessReply(conn, incomingConn.RemoteAddr()); err != nil {
 		return fmt.Errorf("failed to write connection response: %w", err)
 	}
 
@@ -370,6 +310,44 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	})
 
 	return g.Wait()
+}
+
+// WriteSuccessReply writes a SOCKS5 success reply with the given network address.
+func WriteSuccessReply(conn net.Conn, addr net.Addr) error {
+	var ip net.IP
+	var port uint16
+	var domain string
+	var addrType byte
+
+	// Extract IP and port, fallback to 0.0.0.0:0 if not TCP
+	if addr == nil {
+		ip = net.IPv4zero
+		port = 0
+	} else if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+		ip = tcpAddr.IP
+		port = uint16(tcpAddr.Port)
+	} else {
+		// Fallback for non-TCP addresses
+		ip = net.IPv4zero
+		port = 0
+	}
+
+	// Determine address type for response
+	if ip.To4() != nil {
+		addrType = AddrTypeIPv4
+		ip = ip.To4()
+	} else if ip.To16() != nil {
+		addrType = AddrTypeIPv6
+	} else {
+		addrType = AddrTypeIPv4
+		ip = net.IPv4zero
+	}
+
+	// Send success reply
+	var resp Reply
+	resp.Init(SocksVersion, RepSuccess, 0, addrType, ip, domain, port)
+	_, err := resp.WriteTo(conn)
+	return err
 }
 
 // BaseOnUDPAssociate provides UDP ASSOCIATE implementation
