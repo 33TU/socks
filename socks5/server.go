@@ -85,7 +85,7 @@ func Serve(ctx context.Context, listener net.Listener, handler ServerHandler) er
 				continue
 			}
 
-			go serveConn(ctx, handler, conn)
+			go ServeConn(ctx, handler, conn)
 		}
 	}
 }
@@ -100,9 +100,13 @@ func ListenAndServe(ctx context.Context, network, address string, handler Server
 	return Serve(ctx, ln, handler)
 }
 
-// serveConn handles a single client connection, including handshake, authentication, and request processing.
-func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
+// ServeConn handles a single client connection, including handshake, authentication, and request processing.
+func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error {
 	defer conn.Close()
+
+	if handler == nil {
+		return fmt.Errorf("nil handler provided")
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -113,7 +117,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// OnAccept callback
 	if err := handler.OnAccept(ctx, conn); err != nil {
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
 
 	// Use reused reader to reduce allocations
@@ -136,7 +140,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		// Send "No acceptable methods" reply for malformed handshake
 		WriteHandshake(conn, MethodNoAcceptable)
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
 
 	selectedMethod, err := handler.OnHandshake(ctx, conn, &handshakeReq)
@@ -144,18 +148,19 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		// Send "No acceptable methods" reply
 		WriteHandshake(conn, MethodNoAcceptable)
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
 
 	// Send handshake reply
 	if err := WriteHandshake(conn, selectedMethod); err != nil {
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
 
 	if selectedMethod == MethodNoAcceptable {
-		handler.OnError(ctx, conn, fmt.Errorf("no acceptable authentication methods"))
-		return
+		err = fmt.Errorf("no acceptable authentication methods")
+		handler.OnError(ctx, conn, err)
+		return err
 	}
 
 	// Phase 2: Authentication (if required)
@@ -166,18 +171,19 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 		if err := handleUserPassAuth(ctx, handler, conn, reader); err != nil {
 			// Auth function already sent UserPassReply with failure status
 			handler.OnError(ctx, conn, err)
-			return
+			return err
 		}
 	case MethodGSSAPI:
 		if err := handleGSSAPIAuth(ctx, handler, conn, reader); err != nil {
 			// Auth function already sent GSSAPIReply with failure/abort
 			handler.OnError(ctx, conn, err)
-			return
+			return err
 		}
 	default:
 		WriteRejectReply(conn, RepGeneralFailure)
-		handler.OnError(ctx, conn, fmt.Errorf("unsupported authentication method: %d", selectedMethod))
-		return
+		err = fmt.Errorf("unsupported authentication method: %d", selectedMethod)
+		handler.OnError(ctx, conn, err)
+		return err
 	}
 
 	// Phase 3: Request processing
@@ -185,7 +191,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	if _, err := req.ReadFrom(reader); err != nil {
 		WriteRejectReply(conn, RepGeneralFailure)
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
 
 	// Release reader/writer resources before handling request
@@ -194,8 +200,10 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// Handle the request through the handler
 	if err := handler.OnRequest(ctx, conn, &req); err != nil {
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
+
+	return nil
 }
 
 // handleUserPassAuth handles username/password authentication.

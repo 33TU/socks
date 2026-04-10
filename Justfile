@@ -1,11 +1,17 @@
 build-all:
-    just build-socks4-server build-socks5-server
+    just build-socks4-server build-socks5-server build-mux-server
 
 build-socks4-server:
     go build -o bin/socks4-server ./cmd/socks4-server/*go
 
 build-socks5-server:
     go build -o bin/socks5-server ./cmd/socks5-server/*go
+
+build-mux-server:
+    go build -o bin/mux-server ./cmd/mux-server/*go
+
+run-mux-server:
+    bin/mux-server
 
 run-socks4-server:
     bin/socks4-server

@@ -67,7 +67,7 @@ func Serve(ctx context.Context, listener net.Listener, handler ServerHandler) er
 				continue
 			}
 
-			go serveConn(ctx, handler, conn)
+			go ServeConn(ctx, handler, conn)
 		}
 	}
 }
@@ -82,9 +82,13 @@ func ListenAndServe(ctx context.Context, network, address string, handler Server
 	return Serve(ctx, ln, handler)
 }
 
-// serveConn handles a single client connection, including reading the request and processing it.
-func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
+// ServeConn handles a single client connection, including reading the request and processing it.
+func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error {
 	defer conn.Close()
+
+	if handler == nil {
+		return fmt.Errorf("nil handler provided")
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -95,7 +99,7 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// OnAccept callback
 	if err := handler.OnAccept(ctx, conn); err != nil {
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
 
 	// Use reused reader to reduce allocations
@@ -117,14 +121,15 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	if _, err := req.ReadFrom(reader); err != nil {
 		WriteRejectReply(conn, RepRejected)
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
 
 	// Validate user ID
 	if err := handler.OnUserID(ctx, conn, req.UserID, len(req.UserID) > 0); err != nil {
 		WriteRejectReply(conn, RepRejected)
-		handler.OnError(ctx, conn, fmt.Errorf("user ID validation failed: %w", err))
-		return
+		err = fmt.Errorf("user ID validation failed: %w", err)
+		handler.OnError(ctx, conn, err)
+		return err
 	}
 
 	// Release resources used for io
@@ -133,8 +138,10 @@ func serveConn(ctx context.Context, handler ServerHandler, conn net.Conn) {
 	// Handle the request
 	if err := handler.OnRequest(ctx, conn, &req); err != nil {
 		handler.OnError(ctx, conn, err)
-		return
+		return err
 	}
+
+	return nil
 }
 
 // WriteRejectReply sends a SOCKS4 reply with the given rejection code.
