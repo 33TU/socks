@@ -1,4 +1,4 @@
-// Simple SOCKS5 server using the base handler allowing CONNECT and BIND commands with default timeouts and buffer size.
+// Simple SOCKS5 server using the base handler allowing CONNECT, BIND, UDP ASSOCIATE, and RESOLVE commands with default timeouts and buffer size.
 package main
 
 import (
@@ -10,8 +10,10 @@ import (
 
 func main() {
 	handler := &socks5.BaseServerHandler{
-		AllowConnect: true,
-		AllowBind:    true,
+		AllowConnect:      true,
+		AllowBind:         true,
+		AllowUDPAssociate: true,
+		AllowResolve:      true,
 	}
 
 	log.Println("SOCKS5 listening on 127.0.0.1:1080")

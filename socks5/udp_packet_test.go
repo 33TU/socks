@@ -72,7 +72,7 @@ func Test_UDPPacket_Init_Validate(t *testing.T) {
 	}
 }
 
-func Test_UDPPacket_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
+func Test_UDPPacket_Marshal_Unmarshal_RoundTrip(t *testing.T) {
 	tests := []struct {
 		name string
 		init func() socks5.UDPPacket
@@ -107,17 +107,18 @@ func Test_UDPPacket_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := tt.init()
-			var buf bytes.Buffer
 
-			nw, err := orig.WriteTo(&buf)
+			buf := make([]byte, orig.Size())
+
+			nw, err := orig.MarshalTo(buf)
 			if err != nil {
-				t.Fatalf("WriteTo() failed: %v", err)
+				t.Fatalf("MarshalTo() failed: %v", err)
 			}
 
 			var got socks5.UDPPacket
-			nr, err := got.ReadFrom(&buf)
+			nr, err := got.UnmarshalFrom(buf)
 			if err != nil {
-				t.Fatalf("ReadFrom() failed: %v", err)
+				t.Fatalf("UnmarshalFrom() failed: %v", err)
 			}
 
 			if nw != nr {
@@ -140,26 +141,26 @@ func Test_UDPPacket_WriteTo_ReadFrom_RoundTrip(t *testing.T) {
 	}
 }
 
-func Test_UDPPacket_ReadFrom_InvalidRSV(t *testing.T) {
+func Test_UDPPacket_Unmarshal_InvalidRSV(t *testing.T) {
 	b := []byte{
-		0x01, 0x00, // RSV (invalid)
-		0x00, // FRAG
+		0x01, 0x00,
+		0x00,
 		socks5.AddrTypeIPv4,
 		127, 0, 0, 1,
-		0x1F, 0x90, // port 8080
+		0x1F, 0x90,
 		'h', 'i',
 	}
 
 	var p socks5.UDPPacket
-	if _, err := p.ReadFrom(bytes.NewReader(b)); !errors.Is(err, socks5.ErrInvalidUDPReserved) {
+	if _, err := p.UnmarshalFrom(b); !errors.Is(err, socks5.ErrInvalidUDPReserved) {
 		t.Errorf("expected ErrInvalidUDPReserved, got %v", err)
 	}
 }
 
-func Test_UDPPacket_ReadFrom_InvalidFrag(t *testing.T) {
+func Test_UDPPacket_Unmarshal_InvalidFrag(t *testing.T) {
 	b := []byte{
-		0x00, 0x00, // RSV
-		0x01, // FRAG (invalid)
+		0x00, 0x00,
+		0x01,
 		socks5.AddrTypeIPv4,
 		127, 0, 0, 1,
 		0x1F, 0x90,
@@ -167,21 +168,20 @@ func Test_UDPPacket_ReadFrom_InvalidFrag(t *testing.T) {
 	}
 
 	var p socks5.UDPPacket
-	if _, err := p.ReadFrom(bytes.NewReader(b)); !errors.Is(err, socks5.ErrUnsupportedFrag) {
+	if _, err := p.UnmarshalFrom(b); !errors.Is(err, socks5.ErrUnsupportedFrag) {
 		t.Errorf("expected ErrUnsupportedFrag, got %v", err)
 	}
 }
 
-func Test_UDPPacket_ReadFrom_InvalidAddrType(t *testing.T) {
+func Test_UDPPacket_Unmarshal_InvalidAddrType(t *testing.T) {
 	b := []byte{
 		0x00, 0x00,
 		0x00,
-		0x99, // invalid ATYP
-		0x1F, 0x90,
+		0x99,
 	}
 
 	var p socks5.UDPPacket
-	if _, err := p.ReadFrom(bytes.NewReader(b)); !errors.Is(err, socks5.ErrInvalidUDPAddrType) {
+	if _, err := p.UnmarshalFrom(b); !errors.Is(err, socks5.ErrInvalidUDPAddrType) {
 		t.Errorf("expected ErrInvalidUDPAddrType, got %v", err)
 	}
 }
@@ -192,5 +192,21 @@ func Test_UDPPacket_String(t *testing.T) {
 
 	if s := p.String(); s == "" {
 		t.Errorf("expected non-empty String() output")
+	}
+}
+
+func Test_UDPPacket_Size_MatchesMarshal(t *testing.T) {
+	var p socks5.UDPPacket
+	p.Init([2]byte{0, 0}, 0, socks5.AddrTypeDomain, nil, "example.org", 53, []byte("abc"))
+
+	var b [512]byte
+
+	n, err := p.MarshalTo(b[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if n != p.Size() {
+		t.Errorf("Size() mismatch: got %d, want %d", n, p.Size())
 	}
 }

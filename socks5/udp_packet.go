@@ -76,81 +76,132 @@ func (p *UDPPacket) Validate() error {
 	return nil
 }
 
-// ReadFrom reads a UDP ASSOCIATE packet from a Reader.
-// Implements io.ReaderFrom.
-func (p *UDPPacket) ReadFrom(src io.Reader) (int64, error) {
-	var total int64
-
-	// Read RSV + FRAG + ATYP
-	var hdr [4]byte
-	n, err := io.ReadFull(src, hdr[:])
-	total += int64(n)
-	if err != nil {
-		return total, err
+// UnmarshalFrom parses a SOCKS5 UDP packet from raw bytes.
+func (p *UDPPacket) UnmarshalFrom(b []byte) (int, error) {
+	if len(b) < 4 {
+		return 0, io.ErrUnexpectedEOF
 	}
 
-	copy(p.Reserved[:], hdr[0:2])
-	p.Frag = hdr[2]
-	p.AddrType = hdr[3]
+	// Header
+	copy(p.Reserved[:], b[0:2])
+	p.Frag = b[2]
+	p.AddrType = b[3]
 
 	if err := p.ValidateHeader(); err != nil {
-		return total, err
+		return 0, err
 	}
 
-	// Read DST.ADDR
+	i := 4
+
+	// Address
 	switch p.AddrType {
 	case AddrTypeIPv4:
-		var ip [4]byte
-		n, err = io.ReadFull(src, ip[:])
-		total += int64(n)
-		if err != nil {
-			return total, err
+		if len(b) < i+4 {
+			return 0, io.ErrUnexpectedEOF
 		}
-		p.IP = net.IP(ip[:])
+		p.IP = net.IP(b[i : i+4])
+		i += 4
 
 	case AddrTypeIPv6:
-		var ip [16]byte
-		n, err = io.ReadFull(src, ip[:])
-		total += int64(n)
-		if err != nil {
-			return total, err
+		if len(b) < i+16 {
+			return 0, io.ErrUnexpectedEOF
 		}
-		p.IP = net.IP(ip[:])
+		p.IP = net.IP(b[i : i+16])
+		i += 16
 
 	case AddrTypeDomain:
-		var ln [1]byte
-		n, err = io.ReadFull(src, ln[:])
-		total += int64(n)
-		if err != nil {
-			return total, err
+		if len(b) < i+1 {
+			return 0, io.ErrUnexpectedEOF
 		}
-		buf := make([]byte, ln[0])
-		n, err = io.ReadFull(src, buf)
-		total += int64(n)
-		if err != nil {
-			return total, err
+		dlen := int(b[i])
+		i++
+
+		if dlen == 0 || len(b) < i+dlen {
+			return 0, ErrInvalidUDPDomain
 		}
-		p.Domain = string(buf)
+
+		p.Domain = string(b[i : i+dlen])
+		i += dlen
 	}
 
-	// Read DST.PORT
-	var portBuf [2]byte
-	n, err = io.ReadFull(src, portBuf[:])
-	total += int64(n)
-	if err != nil {
-		return total, err
+	// Port
+	if len(b) < i+2 {
+		return 0, io.ErrUnexpectedEOF
 	}
-	p.Port = binary.BigEndian.Uint16(portBuf[:])
+	p.Port = binary.BigEndian.Uint16(b[i : i+2])
+	i += 2
 
-	// Remaining bytes are DATA
-	data, err := io.ReadAll(src)
-	total += int64(len(data))
-	if err != nil {
-		return total, err
+	// Data (zero-copy slice)
+	if len(b) <= i {
+		return 0, ErrMissingUDPData
 	}
-	p.Data = data
+	p.Data = b[i:]
 
-	return total, p.Validate()
+	return len(b), p.Validate()
+}
+
+// MarshalTo writes the packet into b and returns bytes written.
+func (p *UDPPacket) MarshalTo(b []byte) (int, error) {
+	if err := p.Validate(); err != nil {
+		return 0, err
+	}
+
+	i := 0
+
+	// Header
+	if len(b) < 4 {
+		return 0, io.ErrShortBuffer
+	}
+	b[0] = p.Reserved[0]
+	b[1] = p.Reserved[1]
+	b[2] = p.Frag
+	b[3] = p.AddrType
+	i += 4
+
+	// Address
+	switch p.AddrType {
+	case AddrTypeIPv4:
+		ip := p.IP.To4()
+		if ip == nil || len(b) < i+4 {
+			return 0, io.ErrShortBuffer
+		}
+		copy(b[i:], ip)
+		i += 4
+
+	case AddrTypeIPv6:
+		ip := p.IP.To16()
+		if ip == nil || len(b) < i+16 {
+			return 0, io.ErrShortBuffer
+		}
+		copy(b[i:], ip)
+		i += 16
+
+	case AddrTypeDomain:
+		dlen := len(p.Domain)
+		if len(b) < i+1+dlen {
+			return 0, io.ErrShortBuffer
+		}
+		b[i] = byte(dlen)
+		i++
+		copy(b[i:], p.Domain)
+		i += dlen
+	}
+
+	// Port
+	if len(b) < i+2 {
+		return 0, io.ErrShortBuffer
+	}
+	binary.BigEndian.PutUint16(b[i:], p.Port)
+	i += 2
+
+	// Data
+	if len(b) < i+len(p.Data) {
+		return 0, io.ErrShortBuffer
+	}
+	copy(b[i:], p.Data)
+	i += len(p.Data)
+
+	return i, nil
 }
 
 // ValidateHeader checks RSV/FRAG/ATYP fields before full read.
@@ -167,52 +218,6 @@ func (p *UDPPacket) ValidateHeader() error {
 		return ErrInvalidUDPAddrType
 	}
 	return nil
-}
-
-// WriteTo writes a UDP ASSOCIATE packet to a Writer.
-// Implements io.WriterTo.
-func (p *UDPPacket) WriteTo(dst io.Writer) (int64, error) {
-	var total int64
-
-	// Write RSV + FRAG + ATYP
-	hdr := [4]byte{p.Reserved[0], p.Reserved[1], p.Frag, p.AddrType}
-	n, err := dst.Write(hdr[:])
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	switch p.AddrType {
-	case AddrTypeIPv4:
-		n, err = dst.Write(p.IP.To4())
-	case AddrTypeIPv6:
-		n, err = dst.Write(p.IP.To16())
-	case AddrTypeDomain:
-		dlen := len(p.Domain)
-		n, err = dst.Write([]byte{byte(dlen)})
-		total += int64(n)
-		if err == nil {
-			n, err = io.WriteString(dst, p.Domain)
-		}
-	}
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	// Write DST.PORT
-	var portBuf [2]byte
-	binary.BigEndian.PutUint16(portBuf[:], p.Port)
-	n, err = dst.Write(portBuf[:])
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	// Write DATA
-	n, err = dst.Write(p.Data)
-	total += int64(n)
-	return total, err
 }
 
 // String returns a human-readable representation.
@@ -241,4 +246,22 @@ func (p *UDPPacket) hostString() string {
 		return p.Domain
 	}
 	return p.IP.String()
+}
+
+func (p *UDPPacket) Size() int {
+	size := 4 // RSV + FRAG + ATYP
+
+	switch p.AddrType {
+	case AddrTypeIPv4:
+		size += 4
+	case AddrTypeIPv6:
+		size += 16
+	case AddrTypeDomain:
+		size += 1 + len(p.Domain)
+	}
+
+	size += 2 // PORT
+	size += len(p.Data)
+
+	return size
 }
