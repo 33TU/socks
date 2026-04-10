@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -16,169 +16,143 @@ import (
 )
 
 type Config struct {
-	Listen             string
+	Listen string
+
 	RequestTimeout     time.Duration
 	BindAcceptTimeout  time.Duration
 	BindConnTimeout    time.Duration
 	ConnectDialTimeout time.Duration
 	ConnectConnTimeout time.Duration
 	ConnectBufferSize  int
-	AllowConnect       bool
-	AllowBind          bool
-	LogLevel           string
-	AllowedUserIDs     string
-	RequireUserID      bool
+
+	AllowConnect bool
+	AllowBind    bool
+
+	LogLevel       string
+	AllowedUserIDs string
+	RequireUserID  bool
+}
+
+func defaultConfig() *Config {
+	return &Config{
+		Listen: "127.0.0.1:1080",
+
+		RequestTimeout:     10 * time.Second,
+		BindAcceptTimeout:  10 * time.Second,
+		BindConnTimeout:    60 * time.Second,
+		ConnectDialTimeout: 10 * time.Second,
+		ConnectConnTimeout: 60 * time.Second,
+		ConnectBufferSize:  32 * 1024,
+
+		AllowConnect: true,
+		AllowBind:    false,
+
+		LogLevel: "info",
+	}
 }
 
 func parseFlags() *Config {
-	config := &Config{}
+	cfg := defaultConfig()
 
-	flag.StringVar(&config.Listen, "listen", "127.0.0.1:1080", "Address to listen on (host:port)")
-	flag.DurationVar(&config.RequestTimeout, "request-timeout", 10*time.Second, "Timeout for processing requests")
-	flag.DurationVar(&config.BindAcceptTimeout, "bind-accept-timeout", 10*time.Second, "Timeout for BIND accept operations")
-	flag.DurationVar(&config.BindConnTimeout, "bind-conn-timeout", 60*time.Second, "Timeout for BIND connection operations")
-	flag.DurationVar(&config.ConnectDialTimeout, "connect-dial-timeout", 10*time.Second, "Timeout for CONNECT dial operations")
-	flag.DurationVar(&config.ConnectConnTimeout, "connect-conn-timeout", 60*time.Second, "Timeout for CONNECT connection operations")
-	flag.IntVar(&config.ConnectBufferSize, "buffer-size", 32*1024, "Buffer size for data copying (bytes)")
-	flag.BoolVar(&config.AllowConnect, "allow-connect", true, "Allow CONNECT requests")
-	flag.BoolVar(&config.AllowBind, "allow-bind", false, "Allow BIND requests")
-	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-	flag.StringVar(&config.AllowedUserIDs, "allowed-userids", "", "Comma-separated list of allowed user IDs (empty = allow all)")
-	flag.BoolVar(&config.RequireUserID, "require-userid", false, "Require non-empty user ID")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "A SOCKS4/4a proxy server implementation.\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  %s -listen :1080\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -listen 127.0.0.1:9999 -allow-bind\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -listen 0.0.0.0:1080 -log-level debug\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -allowed-userids alice,bob -require-userid\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -require-userid (require non-empty user ID)\n", os.Args[0])
-	}
+	flag.StringVar(&cfg.Listen, "listen", cfg.Listen, "listen address")
+	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", cfg.RequestTimeout, "request timeout")
+	flag.DurationVar(&cfg.BindAcceptTimeout, "bind-accept-timeout", cfg.BindAcceptTimeout, "bind accept timeout")
+	flag.DurationVar(&cfg.BindConnTimeout, "bind-conn-timeout", cfg.BindConnTimeout, "bind conn timeout")
+	flag.DurationVar(&cfg.ConnectDialTimeout, "connect-dial-timeout", cfg.ConnectDialTimeout, "connect dial timeout")
+	flag.DurationVar(&cfg.ConnectConnTimeout, "connect-conn-timeout", cfg.ConnectConnTimeout, "connect conn timeout")
+	flag.IntVar(&cfg.ConnectBufferSize, "buffer-size", cfg.ConnectBufferSize, "copy buffer size")
+	flag.BoolVar(&cfg.AllowConnect, "allow-connect", cfg.AllowConnect, "allow CONNECT")
+	flag.BoolVar(&cfg.AllowBind, "allow-bind", cfg.AllowBind, "allow BIND")
+	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
+	flag.StringVar(&cfg.AllowedUserIDs, "allowed-userids", "", "allowed user IDs (comma-separated)")
+	flag.BoolVar(&cfg.RequireUserID, "require-userid", false, "require non-empty user ID")
 
 	flag.Parse()
-	return config
+	return cfg
 }
 
 func setupLogging(level string) {
-	var logLevel slog.Level
+	lvl := slog.LevelInfo
 	switch level {
 	case "debug":
-		logLevel = slog.LevelDebug
-	case "info":
-		logLevel = slog.LevelInfo
+		lvl = slog.LevelDebug
 	case "warn":
-		logLevel = slog.LevelWarn
+		lvl = slog.LevelWarn
 	case "error":
-		logLevel = slog.LevelError
-	default:
-		logLevel = slog.LevelInfo
+		lvl = slog.LevelError
 	}
 
-	opts := &slog.HandlerOptions{
-		Level: logLevel,
-	}
-
-	handler := slog.NewTextHandler(os.Stdout, opts)
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: lvl,
+	})))
 }
 
-// createUserIDChecker creates a user ID validation function based on configuration
-func createUserIDChecker(config *Config) func(ctx context.Context, userID string) error {
-	// If no validation is required, return nil (allow all)
-	if !config.RequireUserID && config.AllowedUserIDs == "" {
+func userIDChecker(cfg *Config) func(context.Context, string) error {
+	if !cfg.RequireUserID && cfg.AllowedUserIDs == "" {
 		return nil
 	}
 
-	errUnauthorized := fmt.Errorf("user ID not allowed")
-
-	return func(ctx context.Context, userID string) error {
-		// Check if user ID is required but empty
-		if config.RequireUserID && userID == "" {
-			return errUnauthorized
+	var allowed map[string]struct{}
+	if cfg.AllowedUserIDs != "" {
+		allowed = make(map[string]struct{})
+		for _, id := range strings.Split(cfg.AllowedUserIDs, ",") {
+			allowed[strings.TrimSpace(id)] = struct{}{}
 		}
+	}
 
-		// If no specific allowed user IDs, but we require non-empty, accept any non-empty
-		if config.AllowedUserIDs == "" {
+	return func(_ context.Context, userID string) error {
+		if cfg.RequireUserID && userID == "" {
+			return errors.New("user ID required")
+		}
+		if allowed == nil {
 			return nil
 		}
-
-		// Check against allowed user IDs list
-		allowedIDs := strings.Split(config.AllowedUserIDs, ",")
-		for _, allowedID := range allowedIDs {
-			if strings.TrimSpace(allowedID) == userID {
-				return nil
-			}
+		if _, ok := allowed[userID]; !ok {
+			return errors.New("user ID not allowed")
 		}
-		return errUnauthorized
+		return nil
 	}
 }
 
+func newHandler(cfg *Config) *socks4.BaseServerHandler {
+	return &socks4.BaseServerHandler{
+		RequestTimeout:     cfg.RequestTimeout,
+		BindAcceptTimeout:  cfg.BindAcceptTimeout,
+		BindConnTimeout:    cfg.BindConnTimeout,
+		ConnectDialTimeout: cfg.ConnectDialTimeout,
+		ConnectConnTimeout: cfg.ConnectConnTimeout,
+		ConnectBufferSize:  cfg.ConnectBufferSize,
+		AllowConnect:       cfg.AllowConnect,
+		AllowBind:          cfg.AllowBind,
+		UserIDChecker:      userIDChecker(cfg),
+	}
+}
+
+func run(ctx context.Context, cfg *Config) error {
+	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
+		return err
+	}
+
+	handler := newHandler(cfg)
+
+	slog.Info("starting socks4 server", "listen", cfg.Listen)
+
+	return socks4.ListenAndServe(ctx, "tcp", cfg.Listen, handler)
+}
+
 func main() {
-	config := parseFlags()
+	cfg := parseFlags()
+	setupLogging(cfg.LogLevel)
 
-	// Setup logging
-	setupLogging(config.LogLevel)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// Validate listen address
-	_, _, err := net.SplitHostPort(config.Listen)
-	if err != nil {
-		slog.Error("Invalid listen address", "address", config.Listen, "error", err)
-		os.Exit(1)
-	}
-
-	// Create server handler
-	handler := &socks4.BaseServerHandler{
-		RequestTimeout:     config.RequestTimeout,
-		BindAcceptTimeout:  config.BindAcceptTimeout,
-		BindConnTimeout:    config.BindConnTimeout,
-		ConnectDialTimeout: config.ConnectDialTimeout,
-		ConnectConnTimeout: config.ConnectConnTimeout,
-		ConnectBufferSize:  config.ConnectBufferSize,
-		AllowConnect:       config.AllowConnect,
-		AllowBind:          config.AllowBind,
-		UserIDChecker:      createUserIDChecker(config),
-	}
-
-	slog.Info("Starting SOCKS4 server",
-		"listen", config.Listen,
-		"allow_connect", config.AllowConnect,
-		"allow_bind", config.AllowBind,
-		"require_userid", config.RequireUserID,
-		"allowed_userids", config.AllowedUserIDs,
-		"request_timeout", config.RequestTimeout,
-		"bind_accept_timeout", config.BindAcceptTimeout,
-		"bind_conn_timeout", config.BindConnTimeout,
-		"connect_dial_timeout", config.ConnectDialTimeout,
-		"connect_conn_timeout", config.ConnectConnTimeout,
-		"buffer_size", config.ConnectBufferSize,
-	)
-
-	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle shutdown signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		sig := <-sigChan
-		slog.Info("Received shutdown signal", "signal", sig)
-		cancel()
-	}()
-
-	// Start server
-	if err := socks4.ListenAndServe(ctx, "tcp", config.Listen, handler); err != nil {
+	if err := run(ctx, cfg); err != nil {
 		if ctx.Err() != nil {
-			slog.Info("Server stopped gracefully")
-		} else {
-			slog.Error("Server failed", "error", err)
-			os.Exit(1)
+			slog.Info("server stopped")
+			return
 		}
+		slog.Error("server failed", "error", err)
+		os.Exit(1)
 	}
 }

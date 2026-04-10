@@ -10,6 +10,9 @@ build-socks5-server:
 run-socks4-server:
     bin/socks4-server
 
+run-socks5-server:
+    bin/socks5-server
+
 curl-socks4-server:
     curl --socks4 127.0.0.1:1080 https://httpbin.org/ip
 
