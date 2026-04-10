@@ -1,23 +1,17 @@
-build-all:
-    just build-socks4-server build-socks5-server build-mux-server
+run-example-chain:
+    go run examples/chain/main.go
 
-build-socks4-server:
-    go build -o bin/socks4-server ./cmd/socks4-server/*go
+run-example-mux:
+    go run examples/mux/main.go
 
-build-socks5-server:
-    go build -o bin/socks5-server ./cmd/socks5-server/*go
+run-example-socks4:
+    go run examples/socks4/main.go
 
-build-mux-server:
-    go build -o bin/mux-server ./cmd/mux-server/*go
+run-example-socks5:
+    go run examples/socks5/main.go
 
-run-mux-server:
-    bin/mux-server
-
-run-socks4-server:
-    bin/socks4-server
-
-run-socks5-server:
-    bin/socks5-server
+run-example-socks5-custom-handler:
+    go run examples/socks5-custom-handler/main.go
 
 curl-socks4-server:
     curl --socks4 127.0.0.1:1080 https://httpbin.org/ip

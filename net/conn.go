@@ -29,6 +29,10 @@ func CopyConn(dst, src net.Conn, timeout time.Duration, bufSize int) error {
 		return err
 	}
 
+	if bufSize <= 0 {
+		bufSize = 1024 * 32 // default buffer size for io.CopyBuffer
+	}
+
 	buf := internal.GetBytes(bufSize)
 	defer internal.PutBytes(buf)
 

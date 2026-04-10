@@ -14,7 +14,6 @@ var DefaultServerHandler ServerHandler = &BaseServerHandler{
 	RequestTimeout:     10 * time.Second,
 	BindAcceptTimeout:  10 * time.Second,
 	BindConnTimeout:    60 * time.Second,
-	ConnectDialTimeout: 10 * time.Second,
 	ConnectConnTimeout: 60 * time.Second,
 	ConnectBufferSize:  1024 * 32,
 	AllowConnect:       true,

@@ -3,6 +3,7 @@ package socks5
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,7 +21,6 @@ type BaseServerHandler struct {
 	RequestTimeout      time.Duration
 	BindAcceptTimeout   time.Duration
 	BindConnTimeout     time.Duration
-	ConnectDialTimeout  time.Duration
 	ConnectConnTimeout  time.Duration
 	UDPAssociateTimeout time.Duration
 	ConnectBufferSize   int
@@ -94,7 +94,7 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "CONNECT request", "from", conn.RemoteAddr(), "target", addr)
 
-	if err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil {
+	if err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		return fmt.Errorf("CONNECT failed to %s: %w", addr, err)
 	}
 
@@ -110,7 +110,7 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 
 	slog.InfoContext(ctx, "BIND request", "from", conn.RemoteAddr(), "target", req.Addr())
 
-	if err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize); err != nil {
+	if err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		return fmt.Errorf("BIND failed: %w", err)
 	}
 
@@ -127,7 +127,7 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 	addr := req.Addr()
 	slog.InfoContext(ctx, "UDP ASSOCIATE request", "from", conn.RemoteAddr(), "target", addr)
 
-	if err := BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.ConnectBufferSize); err != nil {
+	if err := BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		return fmt.Errorf("UDP ASSOCIATE failed to %s: %w", addr, err)
 	}
 
@@ -144,7 +144,7 @@ func (d *BaseServerHandler) OnResolve(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "RESOLVE request", "from", conn.RemoteAddr(), "target", addr)
 
-	if err := BaseOnResolve(ctx, conn, req, d.Dialer, d.ResolveResolver, d.ResolvePreferIPv4, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil {
+	if err := BaseOnResolve(ctx, conn, req, d.Dialer, d.ResolveResolver, d.ResolvePreferIPv4, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		return fmt.Errorf("RESOLVE failed for %s: %w", addr, err)
 	}
 
@@ -201,15 +201,9 @@ func BaseOnRequest(ctx context.Context, handler ServerHandler, conn net.Conn, re
 }
 
 // BaseOnConnect provides CONNECT implementation
-func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer socksnet.Dialer, dialTimeout, connTimeout time.Duration, bufferSize int) error {
+func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer socksnet.Dialer, connTimeout time.Duration, bufferSize int) error {
 	if dialer == nil {
 		dialer = socksnet.DefaultDialer
-	}
-
-	if dialTimeout > 0 {
-		ctxDial, cancel := context.WithTimeout(ctx, dialTimeout)
-		defer cancel()
-		ctx = ctxDial
 	}
 
 	targetAddr := req.Addr()
@@ -232,10 +226,6 @@ func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer sock
 	// Send success reply with bound address
 	if err := WriteSuccessReply(conn, remote.LocalAddr()); err != nil {
 		return fmt.Errorf("failed to write connect response: %w", err)
-	}
-
-	if bufferSize <= 0 {
-		bufferSize = 1024 * 32
 	}
 
 	// Start bidirectional copying with coordinated error handling
@@ -291,10 +281,6 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	// Send second reply indicating successful connection
 	if err := WriteSuccessReply(conn, incomingConn.RemoteAddr()); err != nil {
 		return fmt.Errorf("failed to write connection response: %w", err)
-	}
-
-	if bufferSize <= 0 {
-		bufferSize = 1024 * 32
 	}
 
 	// Start bidirectional copying with coordinated error handling
@@ -457,17 +443,10 @@ func BaseOnResolve(
 	conn net.Conn,
 	req *Request,
 	dialer socksnet.Dialer, resolver *net.Resolver, preferIPv4 bool,
-	dialTimeout, connTimeout time.Duration,
+	connTimeout time.Duration,
 	bufferSize int,
 ) error {
 	host := req.GetHost()
-
-	// Optional timeout for DNS resolution
-	if dialTimeout > 0 {
-		ctxDial, cancel := context.WithTimeout(ctx, dialTimeout)
-		defer cancel()
-		ctx = ctxDial
-	}
 
 	if resolver == nil {
 		resolver = net.DefaultResolver

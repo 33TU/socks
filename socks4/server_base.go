@@ -2,7 +2,9 @@ package socks4
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"time"
@@ -18,7 +20,6 @@ type BaseServerHandler struct {
 	RequestTimeout     time.Duration
 	BindAcceptTimeout  time.Duration
 	BindConnTimeout    time.Duration
-	ConnectDialTimeout time.Duration
 	ConnectConnTimeout time.Duration
 	ConnectBufferSize  int
 	AllowConnect       bool
@@ -47,7 +48,7 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 
 	slog.InfoContext(ctx, "BIND request", "from", conn.RemoteAddr(), "target", req.Addr())
 
-	if err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize); err != nil {
+	if err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		return fmt.Errorf("BIND failed: %w", err)
 	}
 
@@ -64,7 +65,7 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "CONNECT request", "from", conn.RemoteAddr(), "target", addr)
 
-	if err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectDialTimeout, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil {
+	if err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		return fmt.Errorf("CONNECT failed to %s: %w", addr, err)
 	}
 
@@ -111,15 +112,9 @@ func BaseOnRequest(ctx context.Context, handler ServerHandler, conn net.Conn, re
 }
 
 // BaseOnConnect provides CONNECT implementation
-func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer socksnet.Dialer, dialTimeout, connTimeout time.Duration, bufferSize int) error {
+func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer socksnet.Dialer, connTimeout time.Duration, bufferSize int) error {
 	if dialer == nil {
 		dialer = socksnet.DefaultDialer
-	}
-
-	if dialTimeout > 0 {
-		ctxDial, cancel := context.WithTimeout(ctx, dialTimeout)
-		defer cancel()
-		ctx = ctxDial
 	}
 
 	remote, err := dialer.DialContext(ctx, "tcp", req.Addr())
@@ -132,10 +127,6 @@ func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer sock
 	// Send success reply
 	if err := WriteSuccessReply(conn, remote.LocalAddr()); err != nil {
 		return fmt.Errorf("failed to write connect response: %w", err)
-	}
-
-	if bufferSize <= 0 {
-		bufferSize = 1024 * 32
 	}
 
 	// Start bidirectional copying with coordinated error handling
@@ -198,10 +189,6 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	// Send second reply indicating successful connection
 	if err := WriteSuccessReply(conn, incomingConn.RemoteAddr()); err != nil {
 		return fmt.Errorf("failed to write connection response: %w", err)
-	}
-
-	if bufferSize <= 0 {
-		bufferSize = 1024 * 32
 	}
 
 	// Start bidirectional copying with coordinated error handling

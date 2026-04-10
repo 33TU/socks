@@ -1,3 +1,4 @@
+// Simple SOCKS4 + SOCKS5 mux server using the base handler allowing CONNECT command with default timeouts and buffer size.
 package main
 
 import (
@@ -10,16 +11,14 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
-
 	handler := &proxy.ServerHandler{
 		Socks4: socks4.DefaultServerHandler,
 		Socks5: socks5.DefaultServerHandler,
 	}
 
-	log.Println("Starting proxy on :1080 (SOCKS4 + SOCKS5)")
+	log.Println("SOCKS4 + SOCKS5 mux listening on 127.0.0.1:1080")
 
-	if err := proxy.ListenAndServe(ctx, "tcp", ":1080", handler); err != nil {
+	if err := proxy.ListenAndServe(context.Background(), "tcp", "127.0.0.1:1080", handler); err != nil {
 		log.Fatal(err)
 	}
 }
