@@ -9,7 +9,7 @@ A lightweight, pure Go implementation of **SOCKS4**, **SOCKS4a**, and **SOCKS5**
 - ⛓️ **Proxy chaining**: Chain multiple SOCKS proxies together
 - 🔐 **Authentication**: Support for no-auth, username/password, and GSSAPI
 - 🎛️ **Customizable handlers**: Implement custom authentication and request handling
-- 📡 **CONNECT & BIND commands**: Full command support for both protocols
+- 📡 Command support: CONNECT, BIND, RESOLVE, and UDP ASSOCIATE
 - 🚀 **High performance**: Efficient connection handling and minimal allocations
 
 ## 📦 Installation
