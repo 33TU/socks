@@ -19,8 +19,8 @@ type ChainDialer interface {
 	ProxyAddress() string
 }
 
-// Chain creates a multi-hop proxy dialer from the provided chain dialers.
-func Chain(connDialers ...ChainDialer) (socksnet.Dialer, error) {
+// New creates a multi-hop proxy dialer from the provided chain dialers.
+func New(connDialers ...ChainDialer) (socksnet.Dialer, error) {
 	if len(connDialers) == 0 {
 		return nil, ErrLeastOneConnDialerRequired
 	}

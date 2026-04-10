@@ -1,78 +1,201 @@
 # 🧦 socks
 
-A lightweight, dependency-free Go implementation of **SOCKS4**, **SOCKS4a**, and soon **SOCKS5**, providing both **client** and **server** support.
+A lightweight, pure Go implementation of **SOCKS4**, **SOCKS4a**, and **SOCKS5** protocols, providing both **client** and **server** support with advanced features like proxy chaining and multi-protocol muxing.
 
-## Features
+## ✨ Features
 
-### ✅ SOCKS4 / SOCKS4a
+- 🔌 **Full SOCKS support**: SOCKS4, SOCKS4a, and SOCKS5
+- 🔀 **Multi-protocol mux**: Handle both SOCKS4 and SOCKS5 on the same port
+- ⛓️ **Proxy chaining**: Chain multiple SOCKS proxies together
+- 🔐 **Authentication**: Support for no-auth, username/password, and GSSAPI
+- 🎛️ **Customizable handlers**: Implement custom authentication and request handling
+- 📡 **CONNECT & BIND commands**: Full command support for both protocols
+- 🚀 **High performance**: Efficient connection handling and minimal allocations
 
-* Full client (`Dialer`) and server (`ServeContext`) implementations
-* Supports both `CONNECT` and `BIND` commands
-* Customizable via handler callbacks (`OnConnect`, `OnBind`, `OnRequest`, `OnError`, etc.)
-* Default handlers for simple proxying and rejection logic
-* Extensive tests covering end-to-end CONNECT and BIND behavior
-* `context.Context` support throughout client and server code
-
-### 🧩 Planned
-
-* SOCKS5 support (both client and server)
-* Username/password authentication
-* UDP ASSOCIATE (SOCKS5)
-
----
-
-## Quick Start
-
-### Run a SOCKS4 proxy server
+## 📦 Installation
 
 ```bash
-go run ./cmd/socks4/main.go
+go get github.com/33TU/socks
 ```
 
-By default, it listens on `:1080` (TCP).
-You can test it using curl:
+## 🚀 Quick Start
 
-```bash
-curl -v --socks4 127.0.0.1:1080 https://example.com
-```
-
----
-
-## Example: Using the SOCKS4 Dialer
+### SOCKS5 Server
 
 ```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/33TU/socks/socks5"
+)
+
 func main() {
-	// Create a new SOCKS4 dialer (proxyAddr, userID, baseDialFunc)
-	dialer := socks4.NewDialer("127.0.0.1:1080", "user", nil)
+    handler := &socks5.BaseServerHandler{
+        AllowConnect: true,
+        AllowBind:    true,
+    }
 
-	// Establish a connection through the SOCKS4 proxy
-	conn, err := dialer.DialContext(context.Background(), "tcp", "example.com:80")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-
-	// Send an HTTP request through the proxy
-	fmt.Fprintf(conn, "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
-
-	// Print the response
-	if _, err := io.Copy(os.Stdout, conn); err != nil {
-		log.Fatal(err)
-	}
+    log.Println("SOCKS5 server listening on :1080")
+    if err := socks5.ListenAndServe(context.Background(), "tcp", ":1080", handler); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 
----
+### Multi-Protocol Mux Server
 
-## Project Goals
+```go
+package main
 
-1. Provide a **clean**, **readable**, and **tested** SOCKS implementation.
-2. Support both **client** and **server** use cases.
-3. No external dependencies.
-4. Be fast and correct for real-world proxy usage.
+import (
+	"context"
+	"log"
 
----
+	"github.com/33TU/socks/proxy"
+	"github.com/33TU/socks/socks4"
+	"github.com/33TU/socks/socks5"
+)
 
-## License
+func main() {
+	handler := &proxy.ServerHandler{
+		Socks4: socks4.DefaultServerHandler,
+		Socks5: socks5.DefaultServerHandler,
+	}
+
+	log.Println("SOCKS4+5 mux server listening on :1080")
+	if err := proxy.ListenAndServe(context.Background(), "tcp", ":1080", handler); err != nil {
+		log.Fatal(err)
+	}
+}
+
+```
+
+### SOCKS5 Client
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "io"
+    "net/http"
+
+    "github.com/33TU/socks/socks5"
+)
+
+func main() {
+    dialer := &socks5.Dialer{
+        ProxyAddr: "127.0.0.1:1080",
+    }
+
+    httpClient := &http.Client{
+        Transport: &http.Transport{
+            DialContext: dialer.DialContext,
+        },
+    }
+
+    resp, err := httpClient.Get("http://httpbin.org/ip")
+    if err != nil {
+        panic(err)
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    fmt.Println(string(body))
+}
+```
+
+## 🔗 Proxy Chaining
+
+Chain multiple SOCKS proxies for enhanced anonymity:
+
+```go
+package main
+
+import (
+	"context"
+
+	"github.com/33TU/socks/chain"
+	"github.com/33TU/socks/socks4"
+	"github.com/33TU/socks/socks5"
+)
+
+func main() {
+	// Create a chain: Client -> SOCKS4 -> SOCKS5 -> Target
+	dialer, err := chain.New(
+		&socks4.Dialer{ProxyAddr: "127.0.0.1:1081"},
+		&socks5.Dialer{ProxyAddr: "127.0.0.1:1082"},
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	conn, err := dialer.DialContext(context.Background(), "tcp", "httpbin.org:443")
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	// Use the connection...
+}
+```
+
+## 🎛️ Custom Handlers
+
+Implement custom authentication and request handling:
+
+```go
+type CustomHandler struct{}
+
+func (h *CustomHandler) OnAccept(ctx context.Context, conn net.Conn) error {
+    // Custom connection acceptance logic
+    return nil
+}
+
+func (h *CustomHandler) OnAuthUserPass(ctx context.Context, conn net.Conn, username, password string) error {
+    // Custom username/password authentication
+    if username == "admin" && password == "secret" {
+        return nil
+    }
+    return errors.New("invalid credentials")
+}
+
+func (h *CustomHandler) OnRequest(ctx context.Context, conn net.Conn, req *socks5.Request) error {
+	if req.Command != socks5.CmdConnect {
+		return errors.New("only CONNECT command is supported")
+	}
+
+	return c.OnConnect(ctx, conn, req) // pass to OnConnect for handling
+}
+```
+
+## 📁 Examples
+
+Check the [`examples/`](examples/) directory for more complete examples:
+
+- [`socks4/`](examples/socks4/) - Simple SOCKS4 server
+- [`socks5/`](examples/socks5/) - Simple SOCKS5 server  
+- [`mux/`](examples/mux/) - Multi-protocol mux server
+- [`chain/`](examples/chain/) - Multi-hop proxy chaining
+- [`socks5-custom-handler/`](examples/socks5-custom-handler/) - Custom handler implementation
+
+## 🏗️ Architecture
+
+- **`socks4/`** - SOCKS4/4a protocol implementation
+- **`socks5/`** - SOCKS5 protocol with authentication support
+- **`proxy/`** - Multi-protocol mux server
+- **`chain/`** - Proxy chaining functionality
+- **`net/`** - Network utilities and custom connection types
+- **`internal/`** - Internal utilities and helpers
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## 📄 License
 
 MIT

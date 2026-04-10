@@ -271,7 +271,11 @@ func (d *Dialer) ResolveContext(ctx context.Context, network, host string) (net.
 
 // dialProxy connects to the SOCKS5 proxy server.
 func (d *Dialer) dialProxy(ctx context.Context, network string) (net.Conn, error) {
-	return d.Dialer.DialContext(ctx, network, d.ProxyAddr)
+	dialer := d.Dialer
+	if dialer == nil {
+		dialer = socksnet.DefaultDialer
+	}
+	return dialer.DialContext(ctx, network, d.ProxyAddr)
 }
 
 // handshake performs SOCKS5 method negotiation.

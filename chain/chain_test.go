@@ -123,7 +123,7 @@ func TestChain_SOCKS5ToSOCKS5(t *testing.T) {
 	d1 := socks5.NewDialer(s5aAddr, nil, nil)
 	d2 := socks5.NewDialer(s5bAddr, nil, nil)
 
-	chained, err := chain.Chain(d1, d2)
+	chained, err := chain.New(d1, d2)
 	if err != nil {
 		t.Fatalf("Chain failed: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestChain_SOCKS4ToSOCKS5(t *testing.T) {
 	d1 := socks4.NewDialer(s4Addr, "", nil)
 	d2 := socks5.NewDialer(s5Addr, nil, nil)
 
-	chained, err := chain.Chain(d1, d2)
+	chained, err := chain.New(d1, d2)
 	if err != nil {
 		t.Fatalf("Chain failed: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestChain_ThreeHops(t *testing.T) {
 	d2 := socks5.NewDialer(s2Addr, nil, nil)
 	d3 := socks5.NewDialer(s3Addr, nil, nil)
 
-	chained, err := chain.Chain(d1, d2, d3)
+	chained, err := chain.New(d1, d2, d3)
 	if err != nil {
 		t.Fatalf("Chain failed: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestChain_SOCKS5ToSOCKS4(t *testing.T) {
 	d1 := socks5.NewDialer(s5Addr, nil, nil)
 	d2 := socks4.NewDialer(s4Addr, "", nil)
 
-	chained, err := chain.Chain(d1, d2)
+	chained, err := chain.New(d1, d2)
 	if err != nil {
 		t.Fatalf("Chain failed: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestChain_SingleDialer(t *testing.T) {
 
 	d1 := socks5.NewDialer(s5Addr, nil, nil)
 
-	chained, err := chain.Chain(d1)
+	chained, err := chain.New(d1)
 	if err != nil {
 		t.Fatalf("Chain failed: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestChain_OriginalUnmodified(t *testing.T) {
 	d1 := socks5.NewDialer(s5aAddr, nil, nil)
 	d2 := socks4.NewDialer(s4Addr, "testuser", nil)
 
-	_, err := chain.Chain(d1, d2)
+	_, err := chain.New(d1, d2)
 	if err != nil {
 		t.Fatalf("Chain failed: %v", err)
 	}
@@ -245,12 +245,12 @@ func TestChain_MultipleChainsSameDialers(t *testing.T) {
 	d2 := socks4.NewDialer(s4Addr, "user", nil)
 
 	// Create two different chains with same dialers
-	chain1, err := chain.Chain(d1, d2)
+	chain1, err := chain.New(d1, d2)
 	if err != nil {
 		t.Fatalf("Chain1 failed: %v", err)
 	}
 
-	chain2, err := chain.Chain(d2, d1) // Different order
+	chain2, err := chain.New(d2, d1) // Different order
 	if err != nil {
 		t.Fatalf("Chain2 failed: %v", err)
 	}

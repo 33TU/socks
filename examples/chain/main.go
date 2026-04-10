@@ -46,7 +46,7 @@ func main() {
 		time.Sleep(time.Second)
 
 		// Chain http request thro the servers.
-		dialer, err := chain.Chain(
+		dialer, err := chain.New(
 			socks4.NewDialer("127.0.0.1:1080", "", nil), // socks5 dialer also fine as the mux server supports both protocols
 			socks4.NewDialer("127.0.0.1:1081", "", nil),
 			socks5.NewDialer("127.0.0.1:1082", nil, nil),
