@@ -30,14 +30,29 @@ func NewDialer(proxyAddr, userID string, dialer socksnet.Dialer) *Dialer {
 	}
 }
 
+// ProxyAddress returns the configured SOCKS4 proxy address.
+func (d *Dialer) ProxyAddress() string {
+	return d.ProxyAddr
+}
+
 // DialContext establishes a connection via SOCKS4/4a proxy (CONNECT command).
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := splitHostPort(ctx, address)
+	conn, err := d.dialProxy(ctx, network)
 	if err != nil {
 		return nil, err
 	}
 
-	conn, err := d.dialProxy(ctx, network)
+	return d.DialConnContext(ctx, conn, network, address)
+}
+
+// Dial establishes a connection via SOCKS4/4a proxy using background context.
+func (d *Dialer) Dial(network, address string) (net.Conn, error) {
+	return d.DialContext(context.Background(), network, address)
+}
+
+// DialConnContext upgrades an existing connection via SOCKS4/4a proxy (CONNECT command).
+func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, address string) (net.Conn, error) {
+	host, port, err := splitHostPort(ctx, address)
 	if err != nil {
 		return nil, err
 	}
@@ -60,9 +75,9 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	return conn, nil
 }
 
-// Dial establishes a connection via SOCKS4/4a proxy using background context.
-func (d *Dialer) Dial(network, address string) (net.Conn, error) {
-	return d.DialContext(context.Background(), network, address)
+// DialConn upgrades an existing connection using background context.
+func (d *Dialer) DialConn(conn net.Conn, network, address string) (net.Conn, error) {
+	return d.DialConnContext(context.Background(), conn, network, address)
 }
 
 // BindContext establishes a passive BIND connection via SOCKS4 proxy (CMD_BIND).

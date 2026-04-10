@@ -54,6 +54,11 @@ func NewDialer(proxyAddr string, auth *Auth, dialer socksnet.Dialer) *Dialer {
 	}
 }
 
+// ProxyAddress returns the configured SOCKS5 proxy address.
+func (d *Dialer) ProxyAddress() string {
+	return d.ProxyAddr
+}
+
 // NewDialerWithGSSAPI creates a new SOCKS5 dialer instance with GSSAPI support.
 func NewDialerWithGSSAPI(proxyAddr string, auth *Auth, gssapiAuth *GSSAPIAuth, dialer socksnet.Dialer) *Dialer {
 	if dialer == nil {
@@ -69,12 +74,22 @@ func NewDialerWithGSSAPI(proxyAddr string, auth *Auth, gssapiAuth *GSSAPIAuth, d
 
 // DialContext establishes a connection via SOCKS5 proxy (CONNECT command).
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := splitHostPort(ctx, address)
+	conn, err := d.dialProxy(ctx, network)
 	if err != nil {
 		return nil, err
 	}
 
-	conn, err := d.dialProxy(ctx, network)
+	return d.DialConnContext(ctx, conn, network, address)
+}
+
+// Dial establishes a connection via SOCKS5 proxy using background context.
+func (d *Dialer) Dial(network, address string) (net.Conn, error) {
+	return d.DialContext(context.Background(), network, address)
+}
+
+// DialConnContext upgrades an existing connection via SOCKS5 proxy (CONNECT command).
+func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, address string) (net.Conn, error) {
+	host, port, err := splitHostPort(ctx, address)
 	if err != nil {
 		return nil, err
 	}
@@ -83,11 +98,13 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	cleanup := bindConnToContext(ctx, conn)
 	defer cleanup()
 
+	// SOCKS5 negotiation (auth, method selection, etc.)
 	if err := d.handshake(conn); err != nil {
 		conn.Close()
 		return nil, err
 	}
 
+	// CONNECT request
 	reply, err := d.doRequest(conn, CmdConnect, host, port)
 	if err != nil {
 		conn.Close()
@@ -102,9 +119,9 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	return conn, nil
 }
 
-// Dial establishes a connection via SOCKS5 proxy using background context.
-func (d *Dialer) Dial(network, address string) (net.Conn, error) {
-	return d.DialContext(context.Background(), network, address)
+// DialConn upgrades an existing connection using background context.
+func (d *Dialer) DialConn(conn net.Conn, network, address string) (net.Conn, error) {
+	return d.DialConnContext(context.Background(), conn, network, address)
 }
 
 // BindContext establishes a passive BIND connection via SOCKS5 proxy.

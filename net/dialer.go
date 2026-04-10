@@ -5,10 +5,15 @@ import (
 	"net"
 )
 
-// DefaultDialer is the default underlying dialer, which uses net.Dialer.DialContext.
+// DefaultDialer is the default Dialer using net.Dialer.
 var DefaultDialer Dialer = &net.Dialer{}
 
-// Dialer is an interface for dialing network connections.
+// Dialer represents a type capable of creating network connections.
 type Dialer interface {
-	DialContext(ctx context.Context, network string, address string) (net.Conn, error)
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// ConnDialer represents a type capable of upgrading an existing connection.
+type ConnDialer interface {
+	DialConnContext(ctx context.Context, conn net.Conn, network, address string) (net.Conn, error)
 }

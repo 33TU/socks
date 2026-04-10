@@ -1,34 +1,77 @@
 package chain
 
 import (
+	"context"
 	"errors"
+	"net"
 
 	socksnet "github.com/33TU/socks/net"
-	"github.com/33TU/socks/socks4"
-	"github.com/33TU/socks/socks5"
 )
 
 var (
-	ErrLeastOneDialerRequired = errors.New("at least one dialer is required in chain")
-	ErrUnsupportedDialerType  = errors.New("unsupported dialer type in chain")
+	ErrLeastOneConnDialerRequired = errors.New("at least one conn dialer is required in chain")
 )
 
-// Chain creates a chained dialer from a list of SOCKS dialers (SOCKS5, SOCKS4a and SOCKS4 supported).
-func Chain(dialers ...socksnet.Dialer) (socksnet.Dialer, error) {
-	if len(dialers) == 0 {
-		return nil, ErrLeastOneDialerRequired
+// ChainDialer represents a proxy hop in the chain.
+type ChainDialer interface {
+	socksnet.Dialer
+	socksnet.ConnDialer
+	ProxyAddress() string
+}
+
+// Chain creates a multi-hop proxy dialer from the provided chain dialers.
+func Chain(connDialers ...ChainDialer) (socksnet.Dialer, error) {
+	if len(connDialers) == 0 {
+		return nil, ErrLeastOneConnDialerRequired
 	}
 
-	for i := 1; i < len(dialers); i++ {
-		switch d := dialers[i].(type) {
-		case *socks5.Dialer:
-			d.Dialer = dialers[i-1]
-		case *socks4.Dialer:
-			d.Dialer = dialers[i-1]
-		default:
-			return nil, ErrUnsupportedDialerType
+	return &mutliChainDialer{
+		dialers: connDialers,
+	}, nil
+}
+
+// mutliChainDialer implements a multi-hop proxy dialer.
+type mutliChainDialer struct {
+	dialers []ChainDialer
+}
+
+func (c *mutliChainDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	dialers := c.dialers
+
+	// fast path, single dialer just dials the target directly
+	if len(dialers) == 1 {
+		return dialers[0].DialContext(ctx, network, address)
+	}
+
+	var (
+		conn net.Conn
+		err  error
+	)
+
+	defer func() {
+		if err != nil && conn != nil {
+			_ = conn.Close()
+		}
+	}()
+
+	for i, d := range dialers {
+		// determine target, last hop targets final address, others target next proxy
+		target := address
+		if i < len(dialers)-1 {
+			target = dialers[i+1].ProxyAddress()
+		}
+
+		// first hop uses DialContext, rest use DialConnContext
+		if i == 0 {
+			conn, err = d.DialContext(ctx, network, target)
+		} else {
+			conn, err = d.DialConnContext(ctx, conn, network, target)
+		}
+
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	return dialers[len(dialers)-1], nil
+	return conn, nil
 }
