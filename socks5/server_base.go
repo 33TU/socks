@@ -1,7 +1,6 @@
 package socks5
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -320,33 +319,33 @@ func BaseOnUDPAssociate(
 
 	clientAddr := conn.RemoteAddr().(*net.TCPAddr)
 
-	// Use errgroup for coordinated goroutine management
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Monitor TCP connection - when it closes, the UDP association should end
+	// Monitor TCP connection
 	g.Go(func() error {
+		defer udpConn.Close()
 		_, err := io.Copy(io.Discard, conn)
 		return err
 	})
 
-	// Handle UDP relay
+	// UDP relay loop
 	g.Go(func() error {
-		// Stack buffer (max UDP size)
+		defer conn.Close()
+
+		// Stack buffers
 		var inArr [1024 * 64]byte
 		inBuf := inArr[:]
 
 		var outArr [1024 * 64]byte
-		w := bytes.NewBuffer(outArr[:0])
+		outBuf := outArr[:]
 
 		for {
-			// Check if context is cancelled
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			default:
 			}
 
-			// Optional timeout
 			if timeout > 0 {
 				udpConn.SetReadDeadline(time.Now().Add(timeout))
 			}
@@ -361,10 +360,9 @@ func BaseOnUDPAssociate(
 				continue
 			}
 
-			// Parse packet using UDPPacket
+			// Parse packet (no allocation)
 			var pkt UDPPacket
-			if _, err := pkt.ReadFrom(bytes.NewReader(inBuf[:n])); err != nil {
-				// Ignore invalid / unsupported packets (including FRAG)
+			if _, err := pkt.UnmarshalFrom(inBuf[:n]); err != nil {
 				continue
 			}
 
@@ -392,12 +390,12 @@ func BaseOnUDPAssociate(
 				continue
 			}
 
-			// Send payload to target
+			// Send to target
 			if _, err := udpConn.WriteToUDP(pkt.Data, targetAddr); err != nil {
 				continue
 			}
 
-			// Read response from target
+			// Read response
 			n2, respAddr, err := udpConn.ReadFromUDP(inBuf)
 			if err != nil {
 				continue
@@ -415,22 +413,24 @@ func BaseOnUDPAssociate(
 
 			resp.Init(
 				[2]byte{0x00, 0x00},
-				0x00, // no fragmentation
+				0x00,
 				byte(addrType),
 				ip,
 				"",
 				uint16(respAddr.Port),
-				inBuf[:n2],
+				inBuf[:n2], // zero-copy
 			)
 
-			// Encode response (avoid heap alloc)
-			w.Reset()
-			if _, err := resp.WriteTo(w); err != nil {
+			// Encode directly into stack buffer
+			nOut, err := resp.MarshalTo(outBuf)
+			if err != nil {
 				continue
 			}
 
 			// Send back to client
-			udpConn.WriteToUDP(w.Bytes(), addr)
+			if _, err := udpConn.WriteToUDP(outBuf[:nOut], addr); err != nil {
+				continue
+			}
 		}
 	})
 

@@ -236,6 +236,22 @@ func (d *Dialer) UDPAssociateContext(
 	return conn, udpAddr, nil
 }
 
+// ListenPacket establishes a UDP association and returns a PacketConn for sending/receiving UDP packets via the SOCKS5 proxy.
+func (d *Dialer) ListenPacket(ctx context.Context, network string, laddr *net.UDPAddr) (net.PacketConn, error) {
+	tcpConn, relayAddr, err := d.UDPAssociateContext(ctx, network, laddr)
+	if err != nil {
+		return nil, err
+	}
+
+	udpConn, err := net.DialUDP("udp", laddr, relayAddr)
+	if err != nil {
+		tcpConn.Close()
+		return nil, err
+	}
+
+	return NewUDPConn(tcpConn, udpConn, relayAddr), nil
+}
+
 // UDPAssociate establishes a UDP association using background context.
 func (d *Dialer) UDPAssociate(network string, clientAddr *net.UDPAddr) (net.Conn, *net.UDPAddr, error) {
 	return d.UDPAssociateContext(context.Background(), network, clientAddr)

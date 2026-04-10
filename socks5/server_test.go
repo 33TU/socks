@@ -694,7 +694,7 @@ func TestBaseServerHandler_GSSAPI_Connect(t *testing.T) {
 	socksLn := startSOCKS5Server(t, handler)
 	defer socksLn.Close()
 
-	// ---- GSSAPI mock context (client side)
+	// GSSAPI mock context (client side)
 	gssapiAuth := &socks5.GSSAPIAuth{
 		Context: &serverMockGSSAPIContext_Success{},
 	}
@@ -716,7 +716,7 @@ func TestBaseServerHandler_GSSAPI_Connect(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// ---- Echo test
+	// Echo test
 	payload := []byte("ping")
 	if _, err := conn.Write(payload); err != nil {
 		t.Fatalf("write: %v", err)
@@ -774,7 +774,7 @@ func TestBaseServerHandler_GSSAPI_MultiRound(t *testing.T) {
 	socksLn := startSOCKS5Server(t, handler)
 	defer socksLn.Close()
 
-	// ---- GSSAPI mock context for multi-round (client side)
+	// GSSAPI mock context for multi-round (client side)
 	gssapiAuth := &socks5.GSSAPIAuth{
 		Context: &serverMockGSSAPIContext_MultiRound{},
 	}
@@ -796,7 +796,7 @@ func TestBaseServerHandler_GSSAPI_MultiRound(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// ---- Echo test with larger payload
+	// Echo test with larger payload
 	payload := genRandom(1024) // 1KB test
 	if _, err := conn.Write(payload); err != nil {
 		t.Fatalf("write: %v", err)
@@ -834,7 +834,7 @@ func TestBaseServerHandler_GSSAPI_Failed(t *testing.T) {
 	socksLn := startSOCKS5Server(t, handler)
 	defer socksLn.Close()
 
-	// ---- GSSAPI mock context that fails (client side)
+	// GSSAPI mock context that fails (client side)
 	gssapiAuth := &socks5.GSSAPIAuth{
 		Context: &serverMockGSSAPIContext_Failure{},
 	}
@@ -1043,7 +1043,7 @@ func TestBaseServerHandler_Resolve_IPPassthrough(t *testing.T) {
 }
 
 func TestBaseServerHandler_UDPAssociate_Echo_WithDialer(t *testing.T) {
-	// ---- UDP echo server
+	// UDP echo server
 	udpEchoAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to resolve UDP address: %v", err)
@@ -1067,7 +1067,7 @@ func TestBaseServerHandler_UDPAssociate_Echo_WithDialer(t *testing.T) {
 		}
 	}()
 
-	// ---- SOCKS5 server
+	// SOCKS5 server
 	handler := &socks5.BaseServerHandler{
 		AllowUDPAssociate:   true,
 		UDPAssociateTimeout: 10 * time.Second,
@@ -1083,7 +1083,6 @@ func TestBaseServerHandler_UDPAssociate_Echo_WithDialer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// ✅ FIX: MUST use "tcp" (control channel)
 	tcpConn, udpRelayAddr, err := dialer.UDPAssociateContext(ctx, "tcp", nil)
 	if err != nil {
 		t.Fatalf("Failed to establish UDP association: %v", err)
@@ -1093,17 +1092,16 @@ func TestBaseServerHandler_UDPAssociate_Echo_WithDialer(t *testing.T) {
 	t.Logf("UDP relay address: %v", udpRelayAddr)
 	t.Logf("UDP echo server address: %v", udpEcho.LocalAddr())
 
-	// Give relay a moment to be ready
 	time.Sleep(50 * time.Millisecond)
 
-	// ---- UDP client socket
+	// UDP client socket
 	clientUDP, err := net.DialUDP("udp", nil, udpRelayAddr)
 	if err != nil {
 		t.Fatalf("Failed to create client UDP connection: %v", err)
 	}
 	defer clientUDP.Close()
 
-	// ---- Build SOCKS5 UDP packet
+	// Build SOCKS5 UDP packet
 	testData := []byte("Hello UDP SOCKS5!")
 	echoServerAddr := udpEcho.LocalAddr().(*net.UDPAddr)
 
@@ -1118,17 +1116,19 @@ func TestBaseServerHandler_UDPAssociate_Echo_WithDialer(t *testing.T) {
 		testData,
 	)
 
-	var packetBuf bytes.Buffer
-	if _, err := udpPacket.WriteTo(&packetBuf); err != nil {
+	// Encode directly
+	buf := make([]byte, udpPacket.Size())
+	nOut, err := udpPacket.MarshalTo(buf)
+	if err != nil {
 		t.Fatalf("Failed to encode UDP packet: %v", err)
 	}
 
-	// ---- Send packet
-	if _, err := clientUDP.Write(packetBuf.Bytes()); err != nil {
+	// Send packet
+	if _, err := clientUDP.Write(buf[:nOut]); err != nil {
 		t.Fatalf("Failed to send UDP packet: %v", err)
 	}
 
-	// ---- Read response
+	// Read response
 	clientUDP.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 	respBuf := make([]byte, 2048)
@@ -1138,11 +1138,11 @@ func TestBaseServerHandler_UDPAssociate_Echo_WithDialer(t *testing.T) {
 	}
 
 	var respPacket socks5.UDPPacket
-	if _, err := respPacket.ReadFrom(bytes.NewReader(respBuf[:n])); err != nil {
+	if _, err := respPacket.UnmarshalFrom(respBuf[:n]); err != nil {
 		t.Fatalf("Failed to parse UDP response packet: %v", err)
 	}
 
-	// ---- Assertions
+	// Assertions
 	if !bytes.Equal(respPacket.Data, testData) {
 		t.Fatalf("UDP echo mismatch: got %q, expected %q", respPacket.Data, testData)
 	}

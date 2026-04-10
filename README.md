@@ -16,7 +16,7 @@ A lightweight, pure Go implementation of **SOCKS4**, **SOCKS4a**, and **SOCKS5**
 
 ```bash
 go get github.com/33TU/socks
-```
+````
 
 ## 🚀 Quick Start
 
@@ -34,8 +34,10 @@ import (
 
 func main() {
     handler := &socks5.BaseServerHandler{
-        AllowConnect: true,
-        AllowBind:    true,
+        AllowConnect:      true,
+        AllowBind:         true,
+        AllowUDPAssociate: true,
+        AllowResolve:      true,
     }
 
     log.Println("SOCKS5 server listening on :1080")
@@ -70,7 +72,6 @@ func main() {
 		log.Fatal(err)
 	}
 }
-
 ```
 
 ### SOCKS5 Client
@@ -125,7 +126,6 @@ import (
 )
 
 func main() {
-	// Create a chain: Client -> SOCKS4 -> SOCKS5 -> Target
 	dialer, err := chain.New(
 		&socks4.Dialer{ProxyAddr: "127.0.0.1:1081"},
 		&socks5.Dialer{ProxyAddr: "127.0.0.1:1082"},
@@ -139,25 +139,19 @@ func main() {
 		panic(err)
 	}
 	defer conn.Close()
-
-	// Use the connection...
 }
 ```
 
 ## 🎛️ Custom Handlers
 
-Implement custom authentication and request handling:
-
 ```go
 type CustomHandler struct{}
 
 func (h *CustomHandler) OnAccept(ctx context.Context, conn net.Conn) error {
-    // Custom connection acceptance logic
     return nil
 }
 
 func (h *CustomHandler) OnAuthUserPass(ctx context.Context, conn net.Conn, username, password string) error {
-    // Custom username/password authentication
     if username == "admin" && password == "secret" {
         return nil
     }
@@ -168,8 +162,166 @@ func (h *CustomHandler) OnRequest(ctx context.Context, conn net.Conn, req *socks
 	if req.Command != socks5.CmdConnect {
 		return errors.New("only CONNECT command is supported")
 	}
+	return c.OnConnect(ctx, conn, req)
+}
+```
 
-	return c.OnConnect(ctx, conn, req) // pass to OnConnect for handling
+### UDP ASSOCIATE (DNS over SOCKS5)
+
+Run server:
+
+```bash
+go run examples/socks5/main.go
+```
+
+Run client:
+
+```bash
+go run examples/socks5-udp-associate/main.go
+```
+
+Example output:
+
+```
+SOCKS5 UDP ready
+Sent DNS query
+Received bytes: 44
+Response from: 0.1.0.1:53
+Payload size: 44
+DNS raw (first 32 bytes): 12348180000100010000000006676f6f676c6503636f6d0000010001c00c0001
+```
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"time"
+
+	"github.com/33TU/socks/socks5"
+)
+
+func main() {
+	d := socks5.NewDialer("127.0.0.1:1080", nil, nil)
+
+	// 1. Get PacketConn (this does UDP ASSOCIATE internally)
+	pc, err := d.ListenPacket(context.Background(), "tcp", nil)
+	if err != nil {
+		panic(err)
+	}
+	defer pc.Close()
+
+	fmt.Println("SOCKS5 UDP ready")
+
+	// Optional: timeout so Read doesn't hang forever
+	pc.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// 2. DNS query (google.com A record)
+	dnsQuery := []byte{
+		0x12, 0x34, 0x01, 0x00,
+		0x00, 0x01, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+
+		0x06, 'g', 'o', 'o', 'g', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,
+
+		0x00, 0x01, 0x00, 0x01,
+	}
+
+	target := &net.UDPAddr{
+		IP:   net.IPv4(1, 1, 1, 1),
+		Port: 53,
+	}
+
+	var buf [4096]byte
+
+	// Send multiple queries to demonstrate that the same PacketConn can be reused without re-associating
+	for i := 0; i < 3; i++ {
+		// 3. Send DNS query
+		_, err = pc.WriteTo(dnsQuery, target)
+		if err != nil {
+			panic(err)
+		}
+
+		fmt.Println("Sent DNS query")
+
+		// 4. Read response
+		n, addr, err := pc.ReadFrom(buf[:])
+		if err != nil {
+			panic(err)
+		}
+
+		fmt.Println("Received bytes:", n)
+		fmt.Println("Response from:", addr)
+
+		// 5. DNS payload is already unwrapped (no SOCKS5 header!)
+		data := buf[:n]
+
+		fmt.Println("Payload size:", len(data))
+		fmt.Printf("DNS raw (first 32 bytes): %x\n", data[:min(32, len(data))])
+	}
+}
+```
+
+---
+
+### RESOLVE (DNS via SOCKS5)
+
+Run server:
+
+```bash
+go run examples/socks5/main.go
+```
+
+Run client:
+
+```bash
+go run examples/socks5-resolve/main.go
+```
+
+Example output:
+
+```
+Resolved localhost       -> ::1
+Resolved google.com      -> 2a00:1450:4026:807::200e
+Resolved cloudflare.com  -> 2606:4700::6810:84e5
+```
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/33TU/socks/socks5"
+)
+
+func main() {
+	d := socks5.NewDialer("127.0.0.1:1080", nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hosts := []string{
+		"localhost",
+		"google.com",
+		"cloudflare.com",
+	}
+
+	for _, host := range hosts {
+		ip, err := d.ResolveContext(ctx, "tcp", host)
+		if err != nil {
+			fmt.Printf("Resolve failed for %s: %v\n", host, err)
+			continue
+		}
+
+		fmt.Printf("Resolved %-15s -> %v\n", host, ip)
+	}
 }
 ```
 
@@ -177,20 +329,24 @@ func (h *CustomHandler) OnRequest(ctx context.Context, conn net.Conn, req *socks
 
 Check the [`examples/`](examples/) directory for more complete examples:
 
-- [`socks4/`](examples/socks4/) - Simple SOCKS4 server
-- [`socks5/`](examples/socks5/) - Simple SOCKS5 server  
-- [`mux/`](examples/mux/) - Multi-protocol mux server
-- [`chain/`](examples/chain/) - Multi-hop proxy chaining
-- [`socks5-custom-handler/`](examples/socks5-custom-handler/) - Custom handler implementation
+* [`socks4/`](examples/socks4/) - Simple SOCKS4 server
+* [`socks5/`](examples/socks5/) - Simple SOCKS5 server
+* [`mux/`](examples/mux/) - Multi-protocol mux server
+* [`chain/`](examples/chain/) - Multi-hop proxy chaining
+* [`socks5-custom-handler/`](examples/socks5-custom-handler/) - Custom handler implementation
+* [`socks5-udp-associate/`](examples/socks5-udp-associate/) - UDP via SOCKS5
+* [`socks5-resolve/`](examples/socks5-resolve/) - DNS resolve via SOCKS5
+
+---
 
 ## 🏗️ Architecture
 
-- **`socks4/`** - SOCKS4/4a protocol implementation
-- **`socks5/`** - SOCKS5 protocol with authentication support
-- **`proxy/`** - Multi-protocol mux server
-- **`chain/`** - Proxy chaining functionality
-- **`net/`** - Network utilities and custom connection types
-- **`internal/`** - Internal utilities and helpers
+* **`socks4/`** - SOCKS4/4a protocol implementation
+* **`socks5/`** - SOCKS5 protocol with authentication support
+* **`proxy/`** - Multi-protocol mux server
+* **`chain/`** - Proxy chaining functionality
+* **`net/`** - Network utilities and custom connection types
+* **`internal/`** - Internal utilities and helpers
 
 ## 🤝 Contributing
 

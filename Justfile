@@ -13,6 +13,12 @@ run-example-socks5:
 run-example-socks5-custom-handler:
     go run examples/socks5-custom-handler/main.go
 
+run-example-socks5-resolve:
+    go run examples/socks5-resolve/main.go
+
+run-example-socks5-udp-associate:
+    go run examples/socks5-udp-associate/main.go
+
 curl-socks4-server:
     curl --socks4 127.0.0.1:1080 https://httpbin.org/ip
 

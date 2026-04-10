@@ -62,3 +62,27 @@ func ceilLog2(n int) int {
 	n--
 	return bits.Len(uint(n))
 }
+
+// BytesWriter is a simple wrapper around a byte slice that implements io.Writer.
+type BytesWriter struct {
+	b   []byte
+	pos int
+}
+
+// Init initializes the BytesWriter with a byte slice.
+func (w *BytesWriter) Init(buf []byte) {
+	w.b = buf
+	w.pos = 0
+}
+
+// Bytes returns the written portion of the byte slice.
+func (w *BytesWriter) Bytes() []byte {
+	return w.b[:w.pos]
+}
+
+// Write implements [io.Writer].
+func (w *BytesWriter) Write(p []byte) (int, error) {
+	n := copy(w.b[w.pos:], p)
+	w.pos += n
+	return n, nil
+}
