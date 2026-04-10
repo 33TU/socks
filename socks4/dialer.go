@@ -191,13 +191,7 @@ func (d *Dialer) doRequest(
 		req.Domain = host
 	}
 
-	writer := internal.GetWriter(conn)
-	defer internal.PutWriter(writer)
-
-	if _, err := req.WriteTo(writer); err != nil {
-		return nil, err
-	}
-	if err := writer.Flush(); err != nil {
+	if _, err := req.WriteTo(conn); err != nil {
 		return nil, err
 	}
 

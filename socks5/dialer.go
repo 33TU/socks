@@ -289,13 +289,7 @@ func (d *Dialer) handshake(conn net.Conn) error {
 	var req HandshakeRequest
 	req.Init(SocksVersion, methods...)
 
-	writer := internal.GetWriter(conn)
-	defer internal.PutWriter(writer)
-
-	if _, err := req.WriteTo(writer); err != nil {
-		return err
-	}
-	if err := writer.Flush(); err != nil {
+	if _, err := req.WriteTo(conn); err != nil {
 		return err
 	}
 
@@ -333,13 +327,7 @@ func (d *Dialer) authUserPass(conn net.Conn) error {
 	var req UserPassRequest
 	req.Init(AuthVersionUserPass, d.Auth.Username, d.Auth.Password)
 
-	writer := internal.GetWriter(conn)
-	defer internal.PutWriter(writer)
-
-	if _, err := req.WriteTo(writer); err != nil {
-		return err
-	}
-	if err := writer.Flush(); err != nil {
+	if _, err := req.WriteTo(conn); err != nil {
 		return err
 	}
 
@@ -373,13 +361,7 @@ func (d *Dialer) authGSSAPI(conn net.Conn) error {
 		Token:   initialToken,
 	}
 
-	writer := internal.GetWriter(conn)
-	defer internal.PutWriter(writer)
-
-	if _, err := req.WriteTo(writer); err != nil {
-		return err
-	}
-	if err := writer.Flush(); err != nil {
+	if _, err := req.WriteTo(conn); err != nil {
 		return err
 	}
 
@@ -417,10 +399,7 @@ func (d *Dialer) authGSSAPI(conn net.Conn) error {
 					Token:   nextToken,
 				}
 
-				if _, err := contReq.WriteTo(writer); err != nil {
-					return err
-				}
-				if err := writer.Flush(); err != nil {
+				if _, err := contReq.WriteTo(conn); err != nil {
 					return err
 				}
 			}
@@ -487,13 +466,7 @@ func (d *Dialer) doRequest(
 		req.IP = ip.To16()
 	}
 
-	writer := internal.GetWriter(conn)
-	defer internal.PutWriter(writer)
-
-	if _, err := req.WriteTo(writer); err != nil {
-		return nil, err
-	}
-	if err := writer.Flush(); err != nil {
+	if _, err := req.WriteTo(conn); err != nil {
 		return nil, err
 	}
 
