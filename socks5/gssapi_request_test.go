@@ -22,14 +22,8 @@ func Test_GSSAPIRequest_Init_And_Validate(t *testing.T) {
 		t.Errorf("expected ErrInvalidGSSAPIVersion, got %v", err)
 	}
 
-	r.Version = socks5.GSSAPIVersion
-	r.MsgType = socks5.GSSAPITypeInit
-	r.Token = nil
-	if err := r.Validate(); !errors.Is(err, socks5.ErrEmptyGSSAPIToken) {
-		t.Errorf("expected ErrEmptyGSSAPIToken, got %v", err)
-	}
-
 	// Abort messages skip token validation
+	r.Version = socks5.GSSAPIVersion
 	r.MsgType = socks5.GSSAPITypeAbort
 	r.Token = nil
 	if err := r.Validate(); err != nil {
@@ -100,15 +94,9 @@ func Test_GSSAPIRequest_ReadFrom_Truncated(t *testing.T) {
 }
 
 func Test_GSSAPIRequest_ReadFrom_EmptyOrTooLong(t *testing.T) {
-	// empty token (len=0)
-	data := []byte{socks5.GSSAPIVersion, socks5.GSSAPITypeInit, 0x00, 0x00}
-	r := &socks5.GSSAPIRequest{}
-	if _, err := r.ReadFrom(bytes.NewReader(data)); !errors.Is(err, socks5.ErrEmptyGSSAPIToken) {
-		t.Errorf("expected ErrEmptyGSSAPIToken, got %v", err)
-	}
-
 	// invalid version
-	data = []byte{0x05, socks5.GSSAPITypeInit, 0x00, 0x01, 0xff}
+	data := []byte{0x05, socks5.GSSAPITypeInit, 0x00, 0x01, 0xff}
+	r := &socks5.GSSAPIRequest{}
 	if _, err := r.ReadFrom(bytes.NewReader(data)); !errors.Is(err, socks5.ErrInvalidGSSAPIVersion) && err != nil {
 		t.Errorf("expected ErrInvalidGSSAPIVersion, got %v", err)
 	}

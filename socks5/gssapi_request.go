@@ -10,7 +10,6 @@ import (
 // Errors for GSSAPI authentication requests.
 var (
 	ErrInvalidGSSAPIVersion = errors.New("invalid GSSAPI version (must be 1)")
-	ErrEmptyGSSAPIToken     = errors.New("GSSAPI token cannot be empty")
 	ErrGSSAPITokenTooLong   = errors.New("GSSAPI token too long (max 65535)")
 )
 
@@ -35,9 +34,6 @@ func (r *GSSAPIRequest) Validate() error {
 	}
 	if r.MsgType == GSSAPITypeAbort {
 		return nil // Abort messages have no token
-	}
-	if len(r.Token) == 0 {
-		return ErrEmptyGSSAPIToken
 	}
 	if len(r.Token) > 65535 {
 		return ErrGSSAPITokenTooLong
@@ -65,9 +61,11 @@ func (r *GSSAPIRequest) ReadFrom(src io.Reader) (int64, error) {
 	if err != nil {
 		return int64(n), err
 	}
+
 	length := binary.BigEndian.Uint16(hdr[2:4])
 	if length == 0 {
-		return int64(n), ErrEmptyGSSAPIToken
+		r.Token = nil
+		return int64(n), r.Validate()
 	}
 
 	token := make([]byte, length)
@@ -76,6 +74,7 @@ func (r *GSSAPIRequest) ReadFrom(src io.Reader) (int64, error) {
 	if err != nil {
 		return total, err
 	}
+
 	r.Token = token
 	return total, r.Validate()
 }
