@@ -34,6 +34,10 @@ type ServerHandler interface {
 	// OnConnect is called for each CONNECT request.
 	OnConnect(ctx context.Context, conn net.Conn, req *Request) error
 
+	// OnClose is called when the connection lifecycle ends.
+	// errCause is the reason the connection ended, if any.
+	OnClose(ctx context.Context, conn net.Conn, errCause error)
+
 	// OnBind is called for each BIND request.
 	OnBind(ctx context.Context, conn net.Conn, req *Request) error
 
@@ -82,9 +86,7 @@ func ListenAndServe(ctx context.Context, network, address string, handler Server
 }
 
 // ServeConn handles a single client connection, including reading the request and processing it.
-func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error {
-	defer conn.Close()
-
+func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) (err error) {
 	if handler == nil {
 		return fmt.Errorf("nil handler provided")
 	}
@@ -93,10 +95,13 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 		if r := recover(); r != nil {
 			handler.OnPanic(ctx, conn, r)
 		}
+
+		handler.OnClose(ctx, conn, err)
+		_ = conn.Close()
 	}()
 
 	// OnAccept callback
-	if err := handler.OnAccept(ctx, conn); err != nil {
+	if err = handler.OnAccept(ctx, conn); err != nil {
 		handler.OnError(ctx, conn, err)
 		return err
 	}
@@ -117,14 +122,14 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 
 	// Read SOCKS4 request using pooled reader
 	var req Request
-	if _, err := req.ReadFrom(reader); err != nil {
+	if _, err = req.ReadFrom(reader); err != nil {
 		WriteRejectReply(conn, RepRejected)
 		handler.OnError(ctx, conn, err)
 		return err
 	}
 
 	// Validate user ID
-	if err := handler.OnUserID(ctx, conn, req.UserID, len(req.UserID) > 0); err != nil {
+	if err = handler.OnUserID(ctx, conn, req.UserID, len(req.UserID) > 0); err != nil {
 		WriteRejectReply(conn, RepRejected)
 		err = fmt.Errorf("user ID validation failed: %w", err)
 		handler.OnError(ctx, conn, err)
@@ -135,7 +140,7 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 	release()
 
 	// Handle the request
-	if err := handler.OnRequest(ctx, conn, &req); err != nil {
+	if err = handler.OnRequest(ctx, conn, &req); err != nil {
 		handler.OnError(ctx, conn, err)
 		return err
 	}

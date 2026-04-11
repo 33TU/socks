@@ -106,6 +106,10 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	return nil
 }
 
+func (d *BaseServerHandler) OnClose(ctx context.Context, conn net.Conn, errCause error) {
+	slog.InfoContext(ctx, "connection closed", "from", conn.RemoteAddr(), "error", errCause)
+}
+
 func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowBind {
 		WriteRejectReply(conn, RepConnectionNotAllowed)

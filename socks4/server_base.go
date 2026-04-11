@@ -73,6 +73,10 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	return nil
 }
 
+func (d *BaseServerHandler) OnClose(ctx context.Context, conn net.Conn, errCause error) {
+	slog.InfoContext(ctx, "connection closed", "from", conn.RemoteAddr(), "error", errCause)
+}
+
 func (d *BaseServerHandler) OnError(ctx context.Context, conn net.Conn, err error) {
 	slog.ErrorContext(ctx, "error occurred", "error", err)
 }

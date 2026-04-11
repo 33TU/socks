@@ -77,6 +77,11 @@ func (c *customServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn,
 	return errors.New("UDP associate not supported")
 }
 
+// OnConnect implements [socks5.ServerHandler].
+func (c *customServerHandler) OnClose(ctx context.Context, conn net.Conn, errCause error) {
+	log.Printf("[OnClose] from %s | error=%v", addr(conn), errCause)
+}
+
 //
 // This custom handler only supports CONNECT command.
 //

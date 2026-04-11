@@ -47,6 +47,10 @@ type ServerHandler interface {
 	// OnConnect is called for each CONNECT request.
 	OnConnect(ctx context.Context, conn net.Conn, req *Request) error
 
+	// OnClose is called when the connection lifecycle ends.
+	// errCause is the reason the connection ended, if any.
+	OnClose(ctx context.Context, conn net.Conn, errCause error)
+
 	// OnBind is called for each BIND request.
 	OnBind(ctx context.Context, conn net.Conn, req *Request) error
 
@@ -101,9 +105,7 @@ func ListenAndServe(ctx context.Context, network, address string, handler Server
 }
 
 // ServeConn handles a single client connection, including handshake, authentication, and request processing.
-func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error {
-	defer conn.Close()
-
+func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) (err error) {
 	if handler == nil {
 		return fmt.Errorf("nil handler provided")
 	}
@@ -112,10 +114,13 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 		if r := recover(); r != nil {
 			handler.OnPanic(ctx, conn, r)
 		}
+
+		handler.OnClose(ctx, conn, err)
+		_ = conn.Close()
 	}()
 
 	// OnAccept callback
-	if err := handler.OnAccept(ctx, conn); err != nil {
+	if err = handler.OnAccept(ctx, conn); err != nil {
 		handler.OnError(ctx, conn, err)
 		return err
 	}
@@ -136,14 +141,15 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 
 	// Phase 1: Handshake (method negotiation)
 	var handshakeReq HandshakeRequest
-	if _, err := handshakeReq.ReadFrom(reader); err != nil {
+	if _, err = handshakeReq.ReadFrom(reader); err != nil {
 		// Send "No acceptable methods" reply for malformed handshake
 		WriteHandshake(conn, MethodNoAcceptable)
 		handler.OnError(ctx, conn, err)
 		return err
 	}
 
-	selectedMethod, err := handler.OnHandshake(ctx, conn, &handshakeReq)
+	var selectedMethod byte
+	selectedMethod, err = handler.OnHandshake(ctx, conn, &handshakeReq)
 	if err != nil {
 		// Send "No acceptable methods" reply
 		WriteHandshake(conn, MethodNoAcceptable)
@@ -152,7 +158,7 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 	}
 
 	// Send handshake reply
-	if err := WriteHandshake(conn, selectedMethod); err != nil {
+	if err = WriteHandshake(conn, selectedMethod); err != nil {
 		handler.OnError(ctx, conn, err)
 		return err
 	}
@@ -168,13 +174,13 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 	case MethodNoAuth:
 		// No authentication required, proceed to request phase
 	case MethodUserPass:
-		if err := handleUserPassAuth(ctx, handler, conn, reader); err != nil {
+		if err = handleUserPassAuth(ctx, handler, conn, reader); err != nil {
 			// Auth function already sent UserPassReply with failure status
 			handler.OnError(ctx, conn, err)
 			return err
 		}
 	case MethodGSSAPI:
-		if err := handleGSSAPIAuth(ctx, handler, conn, reader); err != nil {
+		if err = handleGSSAPIAuth(ctx, handler, conn, reader); err != nil {
 			// Auth function already sent GSSAPIReply with failure/abort
 			handler.OnError(ctx, conn, err)
 			return err
@@ -188,7 +194,7 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 
 	// Phase 3: Request processing
 	var req Request
-	if _, err := req.ReadFrom(reader); err != nil {
+	if _, err = req.ReadFrom(reader); err != nil {
 		WriteRejectReply(conn, RepGeneralFailure)
 		handler.OnError(ctx, conn, err)
 		return err
@@ -198,7 +204,7 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) error 
 	release()
 
 	// Handle the request through the handler
-	if err := handler.OnRequest(ctx, conn, &req); err != nil {
+	if err = handler.OnRequest(ctx, conn, &req); err != nil {
 		handler.OnError(ctx, conn, err)
 		return err
 	}
