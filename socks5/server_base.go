@@ -34,6 +34,7 @@ type BaseServerHandler struct {
 
 	UserPassAuthenticator func(ctx context.Context, username, password string) error
 	GSSAPIAuthenticator   func(ctx context.Context, token []byte) (resp []byte, done bool, err error)
+	UDPAssociateLocalAddr func(ctx context.Context, conn net.Conn, req *Request) (*net.UDPAddr, error)
 }
 
 func (d *BaseServerHandler) OnAccept(ctx context.Context, conn net.Conn) error {
@@ -93,7 +94,7 @@ func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "CONNECT request", "from", conn.RemoteAddr(), "target", addr)
 
-	if err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	if err := BaseOnConnect(ctx, conn, req, d.Dialer, d.ConnectConnTimeout, d.ConnectBufferSize); isUnexpectedNetErr(err) {
 		return fmt.Errorf("CONNECT failed to %s: %w", addr, err)
 	}
 
@@ -109,7 +110,7 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 
 	slog.InfoContext(ctx, "BIND request", "from", conn.RemoteAddr(), "target", req.Addr())
 
-	if err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	if err := BaseOnBind(ctx, conn, req, d.BindAcceptTimeout, d.BindConnTimeout, d.ConnectBufferSize); isUnexpectedNetErr(err) {
 		return fmt.Errorf("BIND failed: %w", err)
 	}
 
@@ -126,7 +127,19 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 	addr := req.Addr()
 	slog.InfoContext(ctx, "UDP ASSOCIATE request", "from", conn.RemoteAddr(), "target", addr)
 
-	if err := BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	var (
+		laddr *net.UDPAddr
+		err   error
+	)
+
+	if d.UDPAssociateLocalAddr != nil {
+		if laddr, err = d.UDPAssociateLocalAddr(ctx, conn, req); err != nil {
+			WriteRejectReply(conn, RepGeneralFailure)
+			return fmt.Errorf("failed to determine local address for UDP associate: %w", err)
+		}
+	}
+
+	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.ConnectBufferSize, laddr); isUnexpectedNetErr(err) {
 		return fmt.Errorf("UDP ASSOCIATE failed to %s: %w", addr, err)
 	}
 
@@ -143,7 +156,7 @@ func (d *BaseServerHandler) OnResolve(ctx context.Context, conn net.Conn, req *R
 	addr := req.Addr()
 	slog.InfoContext(ctx, "RESOLVE request", "from", conn.RemoteAddr(), "target", addr)
 
-	if err := BaseOnResolve(ctx, conn, req, d.Dialer, d.ResolveResolver, d.ResolvePreferIPv4, d.ConnectConnTimeout, d.ConnectBufferSize); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	if err := BaseOnResolve(ctx, conn, req, d.Dialer, d.ResolveResolver, d.ResolvePreferIPv4, d.ConnectConnTimeout, d.ConnectBufferSize); isUnexpectedNetErr(err) {
 		return fmt.Errorf("RESOLVE failed for %s: %w", addr, err)
 	}
 
@@ -303,9 +316,10 @@ func BaseOnUDPAssociate(
 	req *Request,
 	timeout time.Duration,
 	bufferSize int,
+	laddr *net.UDPAddr,
 ) error {
 	// Create UDP listener
-	udpConn, err := net.ListenUDP("udp", nil)
+	udpConn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		WriteRejectReply(conn, RepGeneralFailure)
 		return fmt.Errorf("failed to create UDP socket: %w", err)
@@ -536,4 +550,11 @@ func ResolveSelectBestIP(ips []net.IP, preferIPv4 bool) net.IP {
 
 	// Fallback: return first IP (shouldn't reach here given the checks above)
 	return ips[0]
+}
+
+// isUnexpectedNetErr checks if an error is a network error that is not EOF or ErrClosed
+func isUnexpectedNetErr(err error) bool {
+	return err != nil &&
+		!errors.Is(err, io.EOF) &&
+		!errors.Is(err, net.ErrClosed)
 }
