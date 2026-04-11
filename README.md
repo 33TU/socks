@@ -352,6 +352,10 @@ Check the [`examples/`](examples/) directory for more complete examples:
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## 🔗 Related Projects
+
+- [socks-ipv6-relay](https://github.com/33TU/socks6-relay) - High-performance SOCKS4a/SOCKS5 relay that assigns a unique or sequential IPv6 address per connection. Useful for IP rotation and bypassing rate limits.
+
 ## 📄 License
 
 MIT
