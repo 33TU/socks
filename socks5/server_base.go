@@ -8,27 +8,31 @@ import (
 	"log/slog"
 	"net"
 	"slices"
+	"strconv"
 	"time"
 
+	"github.com/33TU/socks/internal"
 	socksnet "github.com/33TU/socks/net"
 	"golang.org/x/sync/errgroup"
 )
 
 // BaseServerHandler provides a basic implementation of ServerHandler with configurable options.
 type BaseServerHandler struct {
-	Dialer              socksnet.Dialer
-	RequestTimeout      time.Duration
-	BindAcceptTimeout   time.Duration
-	BindConnTimeout     time.Duration
-	ConnectConnTimeout  time.Duration
-	UDPAssociateTimeout time.Duration
-	ConnectBufferSize   int
-	AllowConnect        bool
-	AllowBind           bool
-	AllowUDPAssociate   bool
-	AllowResolve        bool
-	ResolveResolver     *net.Resolver
-	ResolvePreferIPv4   bool // When true, prefer IPv4 addresses over IPv6 for DNS resolution
+	Dialer socksnet.Dialer
+
+	RequestTimeout         time.Duration
+	BindAcceptTimeout      time.Duration
+	BindConnTimeout        time.Duration
+	ConnectConnTimeout     time.Duration
+	UDPAssociateTimeout    time.Duration
+	ConnectBufferSize      int
+	UDPAssociateBufferSize int
+	AllowConnect           bool
+	AllowBind              bool
+	AllowUDPAssociate      bool
+	AllowResolve           bool
+	ResolveResolver        *net.Resolver
+	ResolvePreferIPv4      bool // When true, prefer IPv4 addresses over IPv6 for DNS resolution
 
 	SupportedMethods []byte
 
@@ -139,7 +143,7 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 		}
 	}
 
-	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.ConnectBufferSize, laddr); isUnexpectedNetErr(err) {
+	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.UDPAssociateBufferSize, laddr); isUnexpectedNetErr(err) {
 		return fmt.Errorf("UDP ASSOCIATE failed to %s: %w", addr, err)
 	}
 
@@ -331,27 +335,39 @@ func BaseOnUDPAssociate(
 		return fmt.Errorf("failed to write UDP associate reply: %w", err)
 	}
 
-	clientAddr := conn.RemoteAddr().(*net.TCPAddr)
+	clientTCPAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return fmt.Errorf("unexpected TCP remote addr type %T", conn.RemoteAddr())
+	}
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Monitor TCP connection
+	// Close UDP relay when TCP association ends
 	g.Go(func() error {
 		defer udpConn.Close()
-		_, err := io.Copy(io.Discard, conn)
-		return err
+
+		if _, err := io.Copy(io.Discard, conn); isUnexpectedNetErr(err) {
+			return err
+		}
+		return nil
 	})
 
 	// UDP relay loop
 	g.Go(func() error {
 		defer conn.Close()
 
-		// Stack buffers
-		var inArr [1024 * 64]byte
-		inBuf := inArr[:]
+		if bufferSize <= 0 {
+			bufferSize = 64 * 1024
+		}
 
-		var outArr [1024 * 64]byte
-		outBuf := outArr[:]
+		inBuf := internal.GetBytes(bufferSize)
+		defer internal.PutBytes(inBuf)
+
+		outBuf := internal.GetBytes(bufferSize)
+		defer internal.PutBytes(outBuf)
+
+		// Lock onto the actual UDP client after first valid packet.
+		var clientUDPAddr *net.UDPAddr
 
 		for {
 			select {
@@ -361,65 +377,66 @@ func BaseOnUDPAssociate(
 			}
 
 			if timeout > 0 {
-				udpConn.SetReadDeadline(time.Now().Add(timeout))
+				if err := udpConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+					return err
+				}
 			}
 
-			n, addr, err := udpConn.ReadFromUDP(inBuf)
+			n, srcAddr, err := udpConn.ReadFromUDP(inBuf)
 			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					return err
+				}
+				if errors.Is(err, net.ErrClosed) {
+					return nil
+				}
 				return err
 			}
 
-			// Only accept packets from same client IP
-			if !addr.IP.Equal(clientAddr.IP) {
-				continue
+			// First valid client packet must come from same IP as TCP peer.
+			if clientUDPAddr == nil {
+				var pkt UDPPacket
+				if _, err := pkt.UnmarshalFrom(inBuf[:n]); err == nil && srcAddr.IP.Equal(clientTCPAddr.IP) {
+					clientUDPAddr = cloneUDPAddr(srcAddr)
+				}
 			}
 
-			// Parse packet (no allocation)
-			var pkt UDPPacket
-			if _, err := pkt.UnmarshalFrom(inBuf[:n]); err != nil {
-				continue
-			}
+			// Client -> target
+			if clientUDPAddr != nil &&
+				srcAddr.IP.Equal(clientUDPAddr.IP) &&
+				srcAddr.Port == clientUDPAddr.Port {
 
-			// Resolve target
-			var targetAddr *net.UDPAddr
-
-			switch pkt.AddrType {
-			case AddrTypeIPv4, AddrTypeIPv6:
-				targetAddr = &net.UDPAddr{
-					IP:   pkt.IP,
-					Port: int(pkt.Port),
+				var pkt UDPPacket
+				if _, err := pkt.UnmarshalFrom(inBuf[:n]); err != nil {
+					continue
 				}
 
-			case AddrTypeDomain:
-				addr, err := net.ResolveUDPAddr(
-					"udp",
-					net.JoinHostPort(pkt.Domain, fmt.Sprint(pkt.Port)),
-				)
+				// Fragmentation not supported; RFC says drop if unsupported.
+				if pkt.Frag != 0x00 {
+					continue
+				}
+
+				targetAddr, err := resolveUDPPacketTarget(&pkt)
 				if err != nil {
 					continue
 				}
-				targetAddr = addr
 
-			default:
+				if _, err := udpConn.WriteToUDP(pkt.Data, targetAddr); err != nil {
+					continue
+				}
+
 				continue
 			}
 
-			// Send to target
-			if _, err := udpConn.WriteToUDP(pkt.Data, targetAddr); err != nil {
+			// Target -> client
+			if clientUDPAddr == nil {
 				continue
 			}
 
-			// Read response
-			n2, respAddr, err := udpConn.ReadFromUDP(inBuf)
-			if err != nil {
-				continue
-			}
-
-			// Build response packet
 			var resp UDPPacket
 
 			addrType := AddrTypeIPv6
-			ip := respAddr.IP
+			ip := srcAddr.IP
 			if ip4 := ip.To4(); ip4 != nil {
 				addrType = AddrTypeIPv4
 				ip = ip4
@@ -431,24 +448,51 @@ func BaseOnUDPAssociate(
 				byte(addrType),
 				ip,
 				"",
-				uint16(respAddr.Port),
-				inBuf[:n2], // zero-copy
+				uint16(srcAddr.Port),
+				inBuf[:n],
 			)
 
-			// Encode directly into stack buffer
 			nOut, err := resp.MarshalTo(outBuf)
 			if err != nil {
 				continue
 			}
 
-			// Send back to client
-			if _, err := udpConn.WriteToUDP(outBuf[:nOut], addr); err != nil {
+			if _, err := udpConn.WriteToUDP(outBuf[:nOut], clientUDPAddr); err != nil {
 				continue
 			}
 		}
 	})
 
 	return g.Wait()
+}
+
+// resolveUDPPacketTarget resolves the target address from a UDPPacket, handling different address types.
+func resolveUDPPacketTarget(pkt *UDPPacket) (*net.UDPAddr, error) {
+	switch pkt.AddrType {
+	case AddrTypeIPv4, AddrTypeIPv6:
+		return &net.UDPAddr{
+			IP:   pkt.IP,
+			Port: int(pkt.Port),
+		}, nil
+
+	case AddrTypeDomain:
+		return net.ResolveUDPAddr("udp", net.JoinHostPort(pkt.Domain, strconv.Itoa(int(pkt.Port))))
+
+	default:
+		return nil, fmt.Errorf("unsupported UDP address type: %d", pkt.AddrType)
+	}
+}
+
+// cloneUDPAddr creates a deep copy of a net.UDPAddr
+func cloneUDPAddr(a *net.UDPAddr) *net.UDPAddr {
+	if a == nil {
+		return nil
+	}
+	return &net.UDPAddr{
+		IP:   append(net.IP(nil), a.IP...),
+		Port: a.Port,
+		Zone: a.Zone,
+	}
 }
 
 // BaseOnResolve provides RESOLVE implementation

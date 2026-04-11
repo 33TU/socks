@@ -12,18 +12,19 @@ import (
 
 // DefaultServerHandler is a default implementation used when no custom ServerHandler is provided to Serve or ListenAndServe.
 var DefaultServerHandler ServerHandler = &BaseServerHandler{
-	RequestTimeout:        10 * time.Second,
-	BindAcceptTimeout:     10 * time.Second,
-	BindConnTimeout:       60 * time.Second,
-	ConnectConnTimeout:    60 * time.Second,
-	UDPAssociateTimeout:   300 * time.Second,
-	ConnectBufferSize:     1024 * 32,
-	AllowConnect:          true,
-	AllowBind:             false,
-	AllowUDPAssociate:     false,
-	SupportedMethods:      []byte{MethodNoAuth},
-	UserPassAuthenticator: nil,
-	GSSAPIAuthenticator:   nil,
+	RequestTimeout:         10 * time.Second,
+	BindAcceptTimeout:      10 * time.Second,
+	BindConnTimeout:        60 * time.Second,
+	ConnectConnTimeout:     60 * time.Second,
+	UDPAssociateTimeout:    300 * time.Second,
+	ConnectBufferSize:      1024 * 32,
+	UDPAssociateBufferSize: 1024 * 64,
+	AllowConnect:           true,
+	AllowBind:              false,
+	AllowUDPAssociate:      false,
+	SupportedMethods:       []byte{MethodNoAuth},
+	UserPassAuthenticator:  nil,
+	GSSAPIAuthenticator:    nil,
 }
 
 // ServerHandler handles SOCKS5 server events.
