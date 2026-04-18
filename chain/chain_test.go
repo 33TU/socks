@@ -259,3 +259,57 @@ func TestChain_MultipleChainsSameDialers(t *testing.T) {
 	roundTripEcho(t, chain1, echoLn.Addr().String(), []byte("chain1"))
 	roundTripEcho(t, chain2, echoLn.Addr().String(), []byte("chain2"))
 }
+
+func TestChain_DialConnContext(t *testing.T) {
+	echoLn := startEchoServer(t)
+	defer echoLn.Close()
+
+	s5aAddr, s5aStop := startSOCKS5Server(t)
+	defer s5aStop()
+
+	s5bAddr, s5bStop := startSOCKS5Server(t)
+	defer s5bStop()
+
+	d1 := socks5.NewDialer(s5aAddr, nil, nil)
+	d2 := socks5.NewDialer(s5bAddr, nil, nil)
+
+	chained, err := chain.New(d1, d2)
+	if err != nil {
+		t.Fatalf("Chain failed: %v", err)
+	}
+
+	connDialer, ok := chained.(socksnet.ConnDialer)
+	if !ok {
+		t.Fatal("chained dialer does not implement ConnDialer")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Existing connection to first hop.
+	firstConn, err := net.Dial("tcp", s5aAddr)
+	if err != nil {
+		t.Fatalf("dial first hop failed: %v", err)
+	}
+	defer firstConn.Close()
+
+	conn, err := connDialer.DialConnContext(ctx, firstConn, "tcp", echoLn.Addr().String())
+	if err != nil {
+		t.Fatalf("DialConnContext failed: %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("dialconn")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("echo mismatch: got %q want %q", got, payload)
+	}
+}
