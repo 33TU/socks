@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/33TU/socks/internal"
 	socksnet "github.com/33TU/socks/net"
 )
 
@@ -121,11 +120,8 @@ func (d *Dialer) BindContext(
 	go func() {
 		defer close(readyCh)
 
-		reader := internal.GetReader(conn)
-		defer internal.PutReader(reader)
-
 		var resp2 Reply
-		if _, err := resp2.ReadFrom(reader); err != nil {
+		if _, err := resp2.ReadFrom(conn); err != nil {
 			readyCh <- err
 			return
 		}
@@ -195,11 +191,8 @@ func (d *Dialer) doRequest(
 		return nil, err
 	}
 
-	reader := internal.GetReader(conn)
-	defer internal.PutReader(reader)
-
 	var reply Reply
-	if _, err := reply.ReadFrom(reader); err != nil {
+	if _, err := reply.ReadFrom(conn); err != nil {
 		return nil, err
 	}
 
