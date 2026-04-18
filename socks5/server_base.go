@@ -37,9 +37,22 @@ type BaseServerHandler struct {
 
 	SupportedMethods []byte
 
+	// UserPassAuthenticator validates username/password credentials for
+	// username/password authentication. It should return nil on success
+	// and a non-nil error when authentication fails or cannot be completed.
 	UserPassAuthenticator func(ctx context.Context, username, password string) error
-	GSSAPIAuthenticator   func(ctx context.Context, token []byte) (resp []byte, done bool, err error)
-	UDPAssociateAddrs     func(ctx context.Context, conn net.Conn, req *Request) (relayAddr *net.UDPAddr, outAddr *net.UDPAddr, err error)
+
+	// GSSAPIAuthenticator processes a single GSSAPI token exchange step.
+	// It returns the response token to send back to the client, whether the
+	// authentication exchange is complete, and any error encountered.
+	GSSAPIAuthenticator func(ctx context.Context, token []byte) (resp []byte, done bool, err error)
+
+	// UDPAssociateAddrs returns the addresses used for a SOCKS5 UDP ASSOCIATE.
+	//
+	// relayAddr is the local UDP bind address exposed to the SOCKS client.
+	// outAddr is the local UDP bind/source address used for remote targets.
+	// advertiseAddr is the address returned to the client in the SOCKS5
+	UDPAssociateAddrs func(ctx context.Context, conn net.Conn, req *Request) (relayAddr, outAddr, advertiseAddr *net.UDPAddr, err error)
 }
 
 func (d *BaseServerHandler) OnAccept(ctx context.Context, conn net.Conn) error {
@@ -137,19 +150,20 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 	slog.InfoContext(ctx, "UDP ASSOCIATE request", "from", conn.RemoteAddr(), "target", addr)
 
 	var (
-		laddr *net.UDPAddr
-		oaddr *net.UDPAddr
-		err   error
+		relayAddr     *net.UDPAddr
+		outAddr       *net.UDPAddr
+		advertiseAddr *net.UDPAddr
+		err           error
 	)
 
 	if d.UDPAssociateAddrs != nil {
-		if laddr, oaddr, err = d.UDPAssociateAddrs(ctx, conn, req); err != nil {
+		if relayAddr, outAddr, advertiseAddr, err = d.UDPAssociateAddrs(ctx, conn, req); err != nil {
 			_ = WriteRejectReply(conn, RepGeneralFailure)
 			return fmt.Errorf("failed to determine local address for UDP associate: %w", err)
 		}
 	}
 
-	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.UDPAssociateBufferSize, laddr, oaddr); isUnexpectedNetErr(err) {
+	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.UDPAssociateBufferSize, relayAddr, outAddr, advertiseAddr); isUnexpectedNetErr(err) {
 		return fmt.Errorf("UDP ASSOCIATE failed to %s: %w", addr, err)
 	}
 
@@ -328,6 +342,7 @@ func BaseOnUDPAssociate(
 	bufferSize int,
 	relayAddr *net.UDPAddr, // local UDP bind address exposed to the SOCKS client
 	outAddr *net.UDPAddr, // local UDP bind/source address used for remote targets
+	advertiseAddr *net.UDPAddr, // address advertised to the SOCKS client
 ) error {
 	var clientUDPAddr atomic.Pointer[net.UDPAddr]
 
@@ -355,7 +370,10 @@ func BaseOnUDPAssociate(
 	}
 	defer outConn.Close()
 
-	if err := WriteSuccessReply(conn, relayConn.LocalAddr()); err != nil {
+	if advertiseAddr == nil {
+		advertiseAddr = relayConn.LocalAddr().(*net.UDPAddr)
+	}
+	if err := WriteSuccessReply(conn, advertiseAddr); err != nil {
 		return fmt.Errorf("failed to write UDP associate response: %w", err)
 	}
 
