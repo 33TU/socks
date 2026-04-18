@@ -105,14 +105,6 @@ func Test_Request_ValidateDomain(t *testing.T) {
 	}
 }
 
-func Test_Request_ReadHeaderFrom_Invalid(t *testing.T) {
-	bad := bytes.NewBuffer(make([]byte, 4)) // too short
-	var r socks4.Request
-	if _, err := r.ReadHeaderFrom(bad); err == nil {
-		t.Errorf("expected error for short header")
-	}
-}
-
 func Test_Request_WriteTo_ErrorPropagation(t *testing.T) {
 	r := socks4.Request{}
 	r.Init(4, socks4.CmdConnect, 80, net.IPv4(1, 2, 3, 4), "test", "")

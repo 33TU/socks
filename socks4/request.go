@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-
-	"github.com/33TU/socks/internal"
 )
 
 var (
@@ -126,66 +124,49 @@ func (r *Request) Validate() error {
 	return r.ValidateDomain()
 }
 
-// ReadHeaderFrom reads a 8-byte SOCKS4 or SOCKS4a CONNECT/BIND request from a Reader.
-func (r *Request) ReadHeaderFrom(src io.Reader) (int64, error) {
-	var hdr [8]byte
+// ReadFromWithLimits reads a 8-byte SOCKS4 or SOCKS4a CONNECT/BIND request from a Reader.
+func (r *Request) ReadFromWithLimits(src io.Reader, maxUserIDLen, maxDomainLen int64) (int64, error) {
+	var (
+		total   int64
+		hdr     [8]byte
+		scratch [512]byte
+	)
 
+	// HEADER
 	n, err := io.ReadFull(src, hdr[:])
+	total += int64(n)
 	if err != nil {
-		return int64(n), err
+		return total, err
 	}
 
 	r.Version = hdr[0]
 	r.Command = hdr[1]
 	r.Port = binary.BigEndian.Uint16(hdr[2:4])
 	copy(r.IP[:], hdr[4:8])
-	return int64(n), r.ValidateHeader()
-}
 
-// ReadUserIDAndDomain reads a 8-byte SOCKS4 or SOCKS4a CONNECT/BIND request from a Reader.
-// Note that the limits do not include the null-terminator.
-// Beware if there is data beyond request it can be dropped.
-func (r *Request) ReadUserIDAndDomain(src io.Reader, maxUserIDLen, maxDomainLen int64) (int64, error) {
-	var lr internal.LimitedReader
-	rdr := internal.GetReader(&lr)
-	defer internal.PutReader(rdr)
-
-	// total number of bytes read
-	var total int64
-
-	// read USERID
-	lr.Init(src, maxUserIDLen+1)
-	userID, err := rdr.ReadString(0x00)
-	total += int64(len(userID))
-	if err != nil {
+	if err := r.ValidateHeader(); err != nil {
 		return total, err
 	}
-	r.UserID = userID[:len(userID)-1]
 
-	// read DOMAIN
-	if r.IsSOCKS4a() {
-		lr.Init(src, maxDomainLen+1)
-		domain, err := rdr.ReadString(0x00)
-		total += int64(len(domain))
-		if err != nil {
-			return total, err
-		}
-		r.Domain = domain[:len(domain)-1]
-	}
-
-	return total, nil
-}
-
-// ReadFromWithLimits reads a 8-byte SOCKS4 or SOCKS4a CONNECT/BIND request from a Reader.
-// Note that the limits do not include the null-terminator.
-func (r *Request) ReadFromWithLimits(src io.Reader, maxUserIDLen, maxDomainLen int64) (int64, error) {
-	n1, err := r.ReadHeaderFrom(src)
+	// USERID
+	userID, n, err := readCString(src, scratch[:], maxUserIDLen)
+	total += int64(n)
 	if err != nil {
-		return n1, err
+		return total, fmt.Errorf("failed to read USERID: %w", err)
+	}
+	r.UserID = userID
+
+	// DOMAIN (SOCKS4a only)
+	if r.IsSOCKS4a() {
+		domain, n, err := readCString(src, scratch[:], maxDomainLen)
+		total += int64(n)
+		if err != nil {
+			return total, fmt.Errorf("failed to read DOMAIN: %w", err)
+		}
+		r.Domain = domain
 	}
 
-	n2, err := r.ReadUserIDAndDomain(src, maxUserIDLen, maxDomainLen)
-	return n1 + n2, err
+	return total, r.ValidateDomain()
 }
 
 // ReadFrom reads a SOCKS4 or SOCKS4a CONNECT/BIND request from a Reader.
@@ -251,4 +232,37 @@ func (r *Request) String() string {
 		"SOCKS4 Request{Cmd=%s, IP=%s, Port=%d, UserID=%q, Version=%d}",
 		cmd, r.IPv4(), r.Port, r.UserID, r.Version,
 	)
+}
+
+// readCString reads a null-terminated string from src (excluding the null terminator).
+func readCString(src io.Reader, scratch []byte, limit int64) (string, int, error) {
+	if limit < 0 {
+		return "", 0, fmt.Errorf("invalid limit")
+	}
+
+	var (
+		total int
+		one   [1]byte
+		buf   = scratch[:0]
+	)
+
+	for range limit + 1 { // +1 to allow the terminating NUL
+		nn, err := src.Read(one[:])
+
+		if nn > 0 {
+			total += nn
+
+			if one[0] == 0 {
+				return string(buf), total, nil
+			}
+
+			buf = append(buf, one[0])
+		}
+
+		if err != nil {
+			return "", total, err
+		}
+	}
+
+	return "", total, fmt.Errorf("string exceeds maximum length of %d", limit)
 }
