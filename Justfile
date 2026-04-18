@@ -10,6 +10,9 @@ run-example-socks4:
 run-example-socks5:
     go run examples/socks5/main.go
 
+run-example-socks5-gssapi:
+    go run examples/socks5-gssapi/main.go
+
 run-example-socks5-custom-handler:
     go run examples/socks5-custom-handler/main.go
 
