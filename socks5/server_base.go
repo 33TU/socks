@@ -9,6 +9,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/33TU/socks/internal"
@@ -38,7 +39,7 @@ type BaseServerHandler struct {
 
 	UserPassAuthenticator func(ctx context.Context, username, password string) error
 	GSSAPIAuthenticator   func(ctx context.Context, token []byte) (resp []byte, done bool, err error)
-	UDPAssociateLocalAddr func(ctx context.Context, conn net.Conn, req *Request) (*net.UDPAddr, error)
+	UDPAssociateAddrs     func(ctx context.Context, conn net.Conn, req *Request) (relayAddr *net.UDPAddr, outAddr *net.UDPAddr, err error)
 }
 
 func (d *BaseServerHandler) OnAccept(ctx context.Context, conn net.Conn) error {
@@ -91,7 +92,7 @@ func (d *BaseServerHandler) OnRequest(ctx context.Context, conn net.Conn, req *R
 
 func (d *BaseServerHandler) OnConnect(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowConnect {
-		WriteRejectReply(conn, RepConnectionNotAllowed)
+		_ = WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("CONNECT command not allowed")
 	}
 
@@ -112,7 +113,7 @@ func (d *BaseServerHandler) OnClose(ctx context.Context, conn net.Conn, errCause
 
 func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowBind {
-		WriteRejectReply(conn, RepConnectionNotAllowed)
+		_ = WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("BIND command not allowed")
 	}
 
@@ -128,7 +129,7 @@ func (d *BaseServerHandler) OnBind(ctx context.Context, conn net.Conn, req *Requ
 
 func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowUDPAssociate {
-		WriteRejectReply(conn, RepConnectionNotAllowed)
+		_ = WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("UDP ASSOCIATE command not allowed")
 	}
 
@@ -137,17 +138,18 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 
 	var (
 		laddr *net.UDPAddr
+		oaddr *net.UDPAddr
 		err   error
 	)
 
-	if d.UDPAssociateLocalAddr != nil {
-		if laddr, err = d.UDPAssociateLocalAddr(ctx, conn, req); err != nil {
-			WriteRejectReply(conn, RepGeneralFailure)
+	if d.UDPAssociateAddrs != nil {
+		if laddr, oaddr, err = d.UDPAssociateAddrs(ctx, conn, req); err != nil {
+			_ = WriteRejectReply(conn, RepGeneralFailure)
 			return fmt.Errorf("failed to determine local address for UDP associate: %w", err)
 		}
 	}
 
-	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.UDPAssociateBufferSize, laddr); isUnexpectedNetErr(err) {
+	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.UDPAssociateBufferSize, laddr, oaddr); isUnexpectedNetErr(err) {
 		return fmt.Errorf("UDP ASSOCIATE failed to %s: %w", addr, err)
 	}
 
@@ -157,7 +159,7 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 
 func (d *BaseServerHandler) OnResolve(ctx context.Context, conn net.Conn, req *Request) error {
 	if !d.AllowResolve {
-		WriteRejectReply(conn, RepConnectionNotAllowed)
+		_ = WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("RESOLVE command not allowed")
 	}
 
@@ -215,7 +217,7 @@ func BaseOnRequest(ctx context.Context, handler ServerHandler, conn net.Conn, re
 	case CmdResolve:
 		return handler.OnResolve(ctx, conn, req)
 	default:
-		WriteRejectReply(conn, RepCommandNotSupported)
+		_ = WriteRejectReply(conn, RepCommandNotSupported)
 		return fmt.Errorf("unsupported command: %d", req.Command)
 	}
 }
@@ -238,7 +240,7 @@ func BaseOnConnect(ctx context.Context, conn net.Conn, req *Request, dialer sock
 				code = RepConnectionRefused
 			}
 		}
-		WriteRejectReply(conn, code)
+		_ = WriteRejectReply(conn, code)
 		return fmt.Errorf("failed to connect to target %s: %w", targetAddr, err)
 	}
 	defer remote.Close()
@@ -267,7 +269,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	// Bind to any available port on all interfaces
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
-		WriteRejectReply(conn, RepGeneralFailure)
+		_ = WriteRejectReply(conn, RepGeneralFailure)
 		return fmt.Errorf("failed to bind listening port: %w", err)
 	}
 	defer listener.Close()
@@ -285,7 +287,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	// Wait for incoming connection
 	incomingConn, err := listener.Accept()
 	if err != nil {
-		WriteRejectReply(conn, RepGeneralFailure)
+		_ = WriteRejectReply(conn, RepGeneralFailure)
 		return fmt.Errorf("failed to accept incoming connection: %w", err)
 	}
 	defer incomingConn.Close()
@@ -294,7 +296,7 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	incomingAddr := incomingConn.RemoteAddr().(*net.TCPAddr)
 	expectedIP := req.IP
 	if expectedIP != nil && !expectedIP.IsUnspecified() && !expectedIP.Equal(incomingAddr.IP) {
-		WriteRejectReply(conn, RepConnectionNotAllowed)
+		_ = WriteRejectReply(conn, RepConnectionNotAllowed)
 		return fmt.Errorf("incoming connection from %s, expected %s", incomingAddr.IP, expectedIP)
 	}
 
@@ -317,38 +319,52 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 	return g.Wait()
 }
 
-// BaseOnUDPAssociate provides UDP ASSOCIATE implementation
+// BaseOnUDPAssociate provides UDP ASSOCIATE implementation.
 func BaseOnUDPAssociate(
 	ctx context.Context,
 	conn net.Conn,
 	req *Request,
 	timeout time.Duration,
 	bufferSize int,
-	laddr *net.UDPAddr,
+	relayAddr *net.UDPAddr, // local UDP bind address exposed to the SOCKS client
+	outAddr *net.UDPAddr, // local UDP bind/source address used for remote targets
 ) error {
-	// Create UDP listener
-	udpConn, err := net.ListenUDP("udp", laddr)
-	if err != nil {
-		WriteRejectReply(conn, RepGeneralFailure)
-		return fmt.Errorf("failed to create UDP socket: %w", err)
-	}
-	defer udpConn.Close()
+	var clientUDPAddr atomic.Pointer[net.UDPAddr]
 
-	// Send success reply with UDP relay address
-	if err := WriteSuccessReply(conn, udpConn.LocalAddr()); err != nil {
-		return fmt.Errorf("failed to write UDP associate reply: %w", err)
+	if bufferSize <= 0 {
+		bufferSize = 64 * 1024
 	}
 
 	clientTCPAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
 	if !ok {
+		_ = WriteRejectReply(conn, RepGeneralFailure)
 		return fmt.Errorf("unexpected TCP remote addr type %T", conn.RemoteAddr())
+	}
+
+	relayConn, err := net.ListenUDP("udp", relayAddr)
+	if err != nil {
+		_ = WriteRejectReply(conn, RepGeneralFailure)
+		return fmt.Errorf("failed to listen on relay UDP socket: %w", err)
+	}
+	defer relayConn.Close()
+
+	outConn, err := net.ListenUDP("udp", outAddr)
+	if err != nil {
+		_ = WriteRejectReply(conn, RepGeneralFailure)
+		return fmt.Errorf("failed to listen on outbound UDP socket: %w", err)
+	}
+	defer outConn.Close()
+
+	if err := WriteSuccessReply(conn, relayConn.LocalAddr()); err != nil {
+		return fmt.Errorf("failed to write UDP associate response: %w", err)
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Close UDP relay when TCP association ends
+	// Close UDP sockets when the TCP control connection ends.
 	g.Go(func() error {
-		defer udpConn.Close()
+		defer relayConn.Close()
+		defer outConn.Close()
 
 		if _, err := io.Copy(io.Discard, conn); isUnexpectedNetErr(err) {
 			return err
@@ -356,84 +372,105 @@ func BaseOnUDPAssociate(
 		return nil
 	})
 
-	// UDP relay loop
+	// Client -> remote
 	g.Go(func() error {
-		defer conn.Close()
-
-		if bufferSize <= 0 {
-			bufferSize = 64 * 1024
-		}
-
-		inBuf := internal.GetBytes(bufferSize)
-		defer internal.PutBytes(inBuf)
-
-		outBuf := internal.GetBytes(bufferSize)
-		defer internal.PutBytes(outBuf)
-
-		// Lock onto the actual UDP client after first valid packet.
-		var clientUDPAddr *net.UDPAddr
+		buf := internal.GetBytes(bufferSize)
+		defer internal.PutBytes(buf)
 
 		for {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return nil
 			default:
 			}
 
 			if timeout > 0 {
-				if err := udpConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+				if err := relayConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 					return err
 				}
 			}
 
-			n, srcAddr, err := udpConn.ReadFromUDP(inBuf)
+			n, srcAddr, err := relayConn.ReadFromUDP(buf)
 			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					return err
-				}
 				if errors.Is(err, net.ErrClosed) {
 					return nil
 				}
 				return err
 			}
 
-			// First valid client packet must come from same IP as TCP peer.
-			if clientUDPAddr == nil {
-				var pkt UDPPacket
-				if _, err := pkt.UnmarshalFrom(inBuf[:n]); err == nil && srcAddr.IP.Equal(clientTCPAddr.IP) {
-					clientUDPAddr = cloneUDPAddr(srcAddr)
-				}
-			}
-
-			// Client -> target
-			if clientUDPAddr != nil &&
-				srcAddr.IP.Equal(clientUDPAddr.IP) &&
-				srcAddr.Port == clientUDPAddr.Port {
-
-				var pkt UDPPacket
-				if _, err := pkt.UnmarshalFrom(inBuf[:n]); err != nil {
-					continue
-				}
-
-				// Fragmentation not supported; RFC says drop if unsupported.
-				if pkt.Frag != 0x00 {
-					continue
-				}
-
-				targetAddr, err := resolveUDPPacketTarget(&pkt)
-				if err != nil {
-					continue
-				}
-
-				if _, err := udpConn.WriteToUDP(pkt.Data, targetAddr); err != nil {
-					continue
-				}
-
+			var pkt UDPPacket
+			if _, err := pkt.UnmarshalFrom(buf[:n]); err != nil {
 				continue
 			}
 
-			// Target -> client
-			if clientUDPAddr == nil {
+			locked := clientUDPAddr.Load()
+			if locked == nil {
+				if !srcAddr.IP.Equal(clientTCPAddr.IP) {
+					continue
+				}
+
+				addr := cloneUDPAddr(srcAddr)
+				if clientUDPAddr.CompareAndSwap(nil, addr) {
+					locked = addr
+				} else {
+					locked = clientUDPAddr.Load()
+					if locked == nil {
+						continue
+					}
+				}
+			}
+
+			if !srcAddr.IP.Equal(locked.IP) || srcAddr.Port != locked.Port {
+				continue
+			}
+
+			// Fragmentation unsupported; silently drop.
+			if pkt.Frag != 0x00 {
+				continue
+			}
+
+			targetAddr, err := resolveUDPPacketTarget(&pkt)
+			if err != nil {
+				continue
+			}
+
+			if _, err := outConn.WriteToUDP(pkt.Data, targetAddr); err != nil {
+				continue
+			}
+		}
+	})
+
+	// Remote -> client
+	g.Go(func() error {
+		inBuf := internal.GetBytes(bufferSize)
+		defer internal.PutBytes(inBuf)
+
+		outBuf := internal.GetBytes(bufferSize)
+		defer internal.PutBytes(outBuf)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+			}
+
+			if timeout > 0 {
+				if err := outConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+					return err
+				}
+			}
+
+			n, srcAddr, err := outConn.ReadFromUDP(inBuf)
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return nil
+				}
+				return err
+			}
+
+			locked := clientUDPAddr.Load()
+			if locked == nil {
 				continue
 			}
 
@@ -461,7 +498,7 @@ func BaseOnUDPAssociate(
 				continue
 			}
 
-			if _, err := udpConn.WriteToUDP(outBuf[:nOut], clientUDPAddr); err != nil {
+			if _, err := relayConn.WriteToUDP(outBuf[:nOut], locked); err != nil {
 				continue
 			}
 		}
@@ -470,24 +507,7 @@ func BaseOnUDPAssociate(
 	return g.Wait()
 }
 
-// resolveUDPPacketTarget resolves the target address from a UDPPacket, handling different address types.
-func resolveUDPPacketTarget(pkt *UDPPacket) (*net.UDPAddr, error) {
-	switch pkt.AddrType {
-	case AddrTypeIPv4, AddrTypeIPv6:
-		return &net.UDPAddr{
-			IP:   pkt.IP,
-			Port: int(pkt.Port),
-		}, nil
-
-	case AddrTypeDomain:
-		return net.ResolveUDPAddr("udp", net.JoinHostPort(pkt.Domain, strconv.Itoa(int(pkt.Port))))
-
-	default:
-		return nil, fmt.Errorf("unsupported UDP address type: %d", pkt.AddrType)
-	}
-}
-
-// cloneUDPAddr creates a deep copy of a net.UDPAddr
+// cloneUDPAddr creates a deep copy of a net.UDPAddr.
 func cloneUDPAddr(a *net.UDPAddr) *net.UDPAddr {
 	if a == nil {
 		return nil
@@ -496,6 +516,23 @@ func cloneUDPAddr(a *net.UDPAddr) *net.UDPAddr {
 		IP:   append(net.IP(nil), a.IP...),
 		Port: a.Port,
 		Zone: a.Zone,
+	}
+}
+
+// resolveUDPPacketTarget resolves the target address from a UDPPacket.
+func resolveUDPPacketTarget(pkt *UDPPacket) (*net.UDPAddr, error) {
+	switch pkt.AddrType {
+	case AddrTypeIPv4, AddrTypeIPv6:
+		return &net.UDPAddr{
+			IP:   append(net.IP(nil), pkt.IP...),
+			Port: int(pkt.Port),
+		}, nil
+
+	case AddrTypeDomain:
+		return net.ResolveUDPAddr("udp", net.JoinHostPort(pkt.Domain, strconv.Itoa(int(pkt.Port))))
+
+	default:
+		return nil, fmt.Errorf("unsupported UDP address type: %d", pkt.AddrType)
 	}
 }
 
@@ -516,12 +553,12 @@ func BaseOnResolve(
 
 	ips, err := resolver.LookupIP(ctx, "ip", host)
 	if err != nil {
-		WriteRejectReply(conn, RepHostUnreachable)
+		_ = WriteRejectReply(conn, RepHostUnreachable)
 		return fmt.Errorf("DNS resolution failed for %s: %w", host, err)
 	}
 
 	if len(ips) == 0 {
-		WriteRejectReply(conn, RepHostUnreachable)
+		_ = WriteRejectReply(conn, RepHostUnreachable)
 		return fmt.Errorf("no IP addresses found for host: %s", host)
 	}
 

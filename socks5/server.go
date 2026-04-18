@@ -278,10 +278,11 @@ func handleGSSAPIAuth(ctx context.Context, handler ServerHandler, conn net.Conn,
 }
 
 // WriteRejectReply sends a SOCKS5 reply with the given rejection code.
-func WriteRejectReply(conn net.Conn, code byte) {
+func WriteRejectReply(conn net.Conn, code byte) error {
 	var resp Reply
 	resp.Init(SocksVersion, code, 0, AddrTypeIPv4, net.IPv4zero, "", 0)
-	resp.WriteTo(conn)
+	_, err := resp.WriteTo(conn)
+	return err
 }
 
 // WriteSuccessReply writes a SOCKS5 success reply with the given network address.
