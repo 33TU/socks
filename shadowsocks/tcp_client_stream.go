@@ -146,6 +146,7 @@ type TCPClientResponseStart struct {
 	ResponseSalt   []byte
 	ResponseCipher *TCPStreamCipher
 	Header         TCPResponseHeader
+	InitialPayload []byte
 }
 
 // Validate checks whether the parsed client response-start state is internally valid.
@@ -174,13 +175,16 @@ func (s *TCPClientResponseStart) Validate(method Method, requestSalt []byte) err
 	if !bytes.Equal(s.Header.RequestSalt, requestSalt) {
 		return fmt.Errorf("response request salt mismatch")
 	}
+	if int(s.Header.Length) != len(s.InitialPayload) {
+		return fmt.Errorf("invalid initial payload length: got %d, want %d", len(s.InitialPayload), s.Header.Length)
+	}
 
 	return nil
 }
 
 // ReadResponseStart reads and decrypts the server response startup:
 //
-//	response salt || encrypted response header
+//	response salt || encrypted response header || encrypted first response payload
 func (s *TCPClientRequestStart) ReadResponseStart(
 	src io.Reader,
 ) (*TCPClientResponseStart, int64, error) {
@@ -205,7 +209,7 @@ func (s *TCPClientRequestStart) ReadResponseStart(
 		return nil, total, err
 	}
 
-	encHeaderLen := TcpResponseFixedBaseLen + s.Method.SaltSize + s.Method.TagSize
+	encHeaderLen := 1 + 8 + s.Method.SaltSize + 2 + s.Method.TagSize
 	encHeader := ibuf.GetBytes(encHeaderLen)
 	defer ibuf.PutBytes(encHeader)
 
@@ -215,10 +219,29 @@ func (s *TCPClientRequestStart) ReadResponseStart(
 		return nil, total, err
 	}
 
-	plainScratch := ibuf.GetBytes(TcpResponseFixedBaseLen + s.Method.SaltSize)
-	defer ibuf.PutBytes(plainScratch)
+	plainHeaderScratch := ibuf.GetBytes(1 + 8 + s.Method.SaltSize + 2)
+	defer ibuf.PutBytes(plainHeaderScratch)
 
-	header, err := responseCipher.DecodeResponseHeader(encHeader, plainScratch[:0])
+	header, err := responseCipher.DecodeResponseHeader(encHeader, plainHeaderScratch[:0])
+	if err != nil {
+		return nil, total, err
+	}
+
+	firstPayloadLen := int(header.Length)
+	encPayloadLen := responseCipher.EncryptedPayloadLength(firstPayloadLen)
+	encPayloadBuf := ibuf.GetBytes(encPayloadLen)
+	defer ibuf.PutBytes(encPayloadBuf)
+
+	n, err = io.ReadFull(src, encPayloadBuf)
+	total += int64(n)
+	if err != nil {
+		return nil, total, err
+	}
+
+	payloadScratch := ibuf.GetBytes(firstPayloadLen)
+	defer ibuf.PutBytes(payloadScratch)
+
+	initialPayload, err := responseCipher.DecodeChunkPayloadTo(payloadScratch[:0], encPayloadBuf)
 	if err != nil {
 		return nil, total, err
 	}
@@ -227,6 +250,7 @@ func (s *TCPClientRequestStart) ReadResponseStart(
 		ResponseSalt:   append([]byte(nil), responseSaltBuf...),
 		ResponseCipher: responseCipher,
 		Header:         header,
+		InitialPayload: append([]byte(nil), initialPayload...),
 	}
 	if err := resp.Validate(s.Method, s.RequestSalt); err != nil {
 		return nil, total, err

@@ -3,6 +3,7 @@ package shadowsocks
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"time"
@@ -165,19 +166,8 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 		return nil, err
 	}
 
+	log.Println("writing request start")
 	if _, err := reqStart.WriteRequestStart(conn, time.Now(), target, []byte{0}, nil); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	respStart, _, err := reqStart.ReadResponseStart(conn)
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	var reader TCPChunkReader
-	if err := reader.Init(respStart.ResponseCipher); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -189,9 +179,9 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 	}
 
 	return &TcpConn{
-		Conn:   conn,
-		Reader: reader,
-		Writer: writer,
+		Conn:     conn,
+		Writer:   writer,
+		reqStart: &reqStart,
 	}, nil
 }
 

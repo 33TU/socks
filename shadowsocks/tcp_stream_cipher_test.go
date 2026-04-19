@@ -451,10 +451,12 @@ func TestTCPStreamCipher_RequestVariableHeader_Nil(t *testing.T) {
 func TestTCPStreamCipher_ResponseHeader_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	enc, dec, _ := newTestCipherPair(t)
+	enc, dec, method := newTestCipherPair(t)
+
+	requestSalt := bytes.Repeat([]byte{0xaa}, method.SaltSize)
 
 	var want shadowsocks.TCPResponseHeader
-	want.Init(shadowsocks.TCPHeaderTypeServerStream, 123456789, []byte{1, 2, 3, 4}, 4)
+	want.Init(shadowsocks.TCPHeaderTypeServerStream, 123456789, requestSalt, 4)
 
 	ciphertext, err := enc.EncodeResponseHeaderTo(nil, &want, nil)
 	if err != nil {

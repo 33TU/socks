@@ -236,7 +236,7 @@ func (s *TCPStreamCipher) DecodeResponseHeader(src []byte, scratch []byte) (TCPR
 	if err != nil {
 		return TCPResponseHeader{}, err
 	}
-	if _, err := h.Decode(plain); err != nil {
+	if _, err := h.Decode(plain, s.Method.SaltSize); err != nil {
 		return TCPResponseHeader{}, err
 	}
 

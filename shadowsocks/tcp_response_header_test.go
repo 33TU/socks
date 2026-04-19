@@ -40,15 +40,6 @@ func TestTCPResponseHeader_Init_Validate(t *testing.T) {
 			}(),
 			wantErr: shadowsocks.ErrMissingTCPResponseSalt,
 		},
-		{
-			name: "invalid salt length",
-			hdr: func() shadowsocks.TCPResponseHeader {
-				var h shadowsocks.TCPResponseHeader
-				h.Init(shadowsocks.TCPHeaderTypeServerStream, 123456789, []byte{1, 2, 3}, 4)
-				return h
-			}(),
-			wantErr: shadowsocks.ErrInvalidTCPResponseSaltLen,
-		},
 	}
 
 	for _, tt := range tests {
@@ -80,21 +71,19 @@ func TestTCPResponseHeader_EncodeTo_Decode_RoundTrip(t *testing.T) {
 		Type:        shadowsocks.TCPHeaderTypeServerStream,
 		Timestamp:   123456789,
 		RequestSalt: []byte{0xaa, 0xbb, 0xcc, 0xdd},
-		Length:      4,
+		Length:      4, // first response payload length
 	}
 
-	buf := make([]byte, want.EncodedLen())
-
-	bw, err := want.EncodeTo(buf[:0])
+	buf, err := want.EncodeTo(nil)
 	if err != nil {
 		t.Fatalf("EncodeTo() failed: %v", err)
 	}
-	if len(bw) != len(buf) {
-		t.Fatalf("EncodeTo() wrote %d bytes, want %d", len(bw), len(buf))
+	if len(buf) != want.EncodedLen() {
+		t.Fatalf("EncodeTo() wrote %d bytes, want %d", len(buf), want.EncodedLen())
 	}
 
 	var got shadowsocks.TCPResponseHeader
-	nr, err := got.Decode(buf)
+	nr, err := got.Decode(buf, len(want.RequestSalt))
 	if err != nil {
 		t.Fatalf("Decode() failed: %v", err)
 	}
@@ -138,17 +127,6 @@ func TestTCPResponseHeader_EncodeTo_Invalid(t *testing.T) {
 			bufLen:  32,
 			wantErr: shadowsocks.ErrMissingTCPResponseSalt,
 		},
-		{
-			name: "invalid salt length",
-			hdr: shadowsocks.TCPResponseHeader{
-				Type:        shadowsocks.TCPHeaderTypeServerStream,
-				Timestamp:   1,
-				RequestSalt: []byte{1, 2, 3},
-				Length:      2,
-			},
-			bufLen:  32,
-			wantErr: shadowsocks.ErrInvalidTCPResponseSaltLen,
-		},
 	}
 
 	for _, tt := range tests {
@@ -164,50 +142,62 @@ func TestTCPResponseHeader_EncodeTo_Invalid(t *testing.T) {
 
 func TestTCPResponseHeader_Decode_Invalid(t *testing.T) {
 	tests := []struct {
-		name    string
-		src     []byte
-		wantErr error
+		name           string
+		src            []byte
+		requestSaltLen int
+		wantErr        error
 	}{
 		{
-			name:    "short fixed header",
-			src:     make([]byte, shadowsocks.TcpResponseFixedBaseLen-1),
-			wantErr: shadowsocks.ErrShortTCPHeader,
+			name:           "invalid request salt length",
+			src:            []byte{},
+			requestSaltLen: 0,
+			wantErr:        shadowsocks.ErrInvalidTCPResponseSaltLen,
+		},
+		{
+			name:           "short fixed header",
+			src:            make([]byte, 1+8+2+2-1), // type + timestamp + 2-byte salt + length - 1
+			requestSaltLen: 2,
+			wantErr:        shadowsocks.ErrShortTCPHeader,
 		},
 		{
 			name: "invalid type",
 			src: []byte{
 				0x99,
 				0, 0, 0, 0, 0, 0, 0, 1,
-				0, 2,
 				0xaa, 0xbb,
+				0, 2,
 			},
-			wantErr: shadowsocks.ErrInvalidTCPHeaderType,
+			requestSaltLen: 2,
+			wantErr:        shadowsocks.ErrInvalidTCPHeaderType,
 		},
 		{
 			name: "missing salt bytes",
 			src: []byte{
 				shadowsocks.TCPHeaderTypeServerStream,
 				0, 0, 0, 0, 0, 0, 0, 1,
-				0, 2,
 				0xaa,
+				0, 2,
 			},
-			wantErr: shadowsocks.ErrShortTCPHeader,
+			requestSaltLen: 2,
+			wantErr:        shadowsocks.ErrShortTCPHeader,
 		},
 		{
-			name: "empty salt",
+			name: "missing length bytes after salt",
 			src: []byte{
 				shadowsocks.TCPHeaderTypeServerStream,
 				0, 0, 0, 0, 0, 0, 0, 1,
-				0, 0,
+				0xaa, 0xbb,
+				0,
 			},
-			wantErr: shadowsocks.ErrMissingTCPResponseSalt,
+			requestSaltLen: 2,
+			wantErr:        shadowsocks.ErrShortTCPHeader,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var h shadowsocks.TCPResponseHeader
-			_, err := h.Decode(tt.src)
+			_, err := h.Decode(tt.src, tt.requestSaltLen)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Decode() error = %v, wantErr = %v", err, tt.wantErr)
 			}
