@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/33TU/socks/internal"
 	socksnet "github.com/33TU/socks/net"
 )
 
@@ -153,7 +154,21 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 	cleanup := bindConnToContext(ctx, conn)
 	defer cleanup()
 
-	ssConn, err := NewClientTCPConn(conn, method, psk, target, []byte{0}, nil)
+	paddingLen, err := RandomInt(1, 64) // make configurable later
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	padding := internal.GetBytes(paddingLen)
+	defer internal.PutBytes(padding)
+
+	if err := FillRandomBytes(padding); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	ssConn, err := NewClientTCPConn(conn, method, psk, target, padding, nil)
 	if err != nil {
 		conn.Close()
 		return nil, err
