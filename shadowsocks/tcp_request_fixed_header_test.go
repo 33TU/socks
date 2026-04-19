@@ -57,12 +57,12 @@ func TestTCPRequestFixedHeader_EncodeTo_Decode_RoundTrip(t *testing.T) {
 
 	buf := make([]byte, want.EncodedLen())
 
-	nw, err := want.EncodeTo(buf)
+	bw, err := want.EncodeTo(buf[:0])
 	if err != nil {
 		t.Fatalf("EncodeTo() failed: %v", err)
 	}
-	if nw != len(buf) {
-		t.Fatalf("EncodeTo() wrote %d bytes, want %d", nw, len(buf))
+	if len(bw) != len(buf) {
+		t.Fatalf("EncodeTo() wrote %d bytes, want %d", len(bw), len(buf))
 	}
 
 	var got shadowsocks.TCPRequestFixedHeader
@@ -95,16 +95,6 @@ func TestTCPRequestFixedHeader_EncodeTo_Invalid(t *testing.T) {
 			},
 			bufLen:  32,
 			wantErr: shadowsocks.ErrInvalidTCPHeaderType,
-		},
-		{
-			name: "short buffer",
-			hdr: shadowsocks.TCPRequestFixedHeader{
-				Type:      shadowsocks.TCPHeaderTypeClientStream,
-				Timestamp: 1,
-				Length:    2,
-			},
-			bufLen:  shadowsocks.TcpRequestFixedHeaderLen - 1,
-			wantErr: shadowsocks.ErrShortTCPHeaderBuffer,
 		},
 	}
 

@@ -138,39 +138,33 @@ func (a *Addr) Decode(src []byte) (int, error) {
 	}
 }
 
-// EncodeTo encodes the address into dst.
-// It returns the number of bytes written.
-func (a *Addr) EncodeTo(dst []byte) (int, error) {
+// EncodeTo encodes the address into dst and returns the extended slice.
+func (a *Addr) EncodeTo(dst []byte) ([]byte, error) {
 	if err := a.Validate(); err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	n := a.EncodedLen()
-	if len(dst) < n {
-		return 0, ErrShortAddrBuffer
-	}
-
-	dst[0] = a.AddrType
+	dst = append(dst, a.AddrType)
 
 	switch a.AddrType {
 	case AddrTypeIPv4:
-		copy(dst[1:5], a.IP.To4())
-		binary.BigEndian.PutUint16(dst[5:7], a.Port)
-		return 7, nil
+		dst = append(dst, a.IP.To4()...)
+		dst = binary.BigEndian.AppendUint16(dst, a.Port)
+		return dst, nil
 
 	case AddrTypeIPv6:
-		copy(dst[1:17], a.IP.To16())
-		binary.BigEndian.PutUint16(dst[17:19], a.Port)
-		return 19, nil
+		dst = append(dst, a.IP.To16()...)
+		dst = binary.BigEndian.AppendUint16(dst, a.Port)
+		return dst, nil
 
 	case AddrTypeDomain:
-		dst[1] = byte(len(a.Domain))
-		copy(dst[2:2+len(a.Domain)], a.Domain)
-		binary.BigEndian.PutUint16(dst[2+len(a.Domain):2+len(a.Domain)+2], a.Port)
-		return 1 + 1 + len(a.Domain) + 2, nil
+		dst = append(dst, byte(len(a.Domain)))
+		dst = append(dst, a.Domain...)
+		dst = binary.BigEndian.AppendUint16(dst, a.Port)
+		return dst, nil
 
 	default:
-		return 0, ErrInvalidAddrType
+		return nil, ErrInvalidAddrType
 	}
 }
 

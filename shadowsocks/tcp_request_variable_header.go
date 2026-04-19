@@ -83,32 +83,22 @@ func (h *TCPRequestVariableHeader) Decode(src []byte) (int, error) {
 }
 
 // EncodeTo encodes the variable request header into dst.
-// It returns the number of bytes written.
-func (h *TCPRequestVariableHeader) EncodeTo(dst []byte) (int, error) {
+func (h *TCPRequestVariableHeader) EncodeTo(dst []byte) ([]byte, error) {
 	if err := h.Validate(); err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	n := h.EncodedLen()
-	if len(dst) < n {
-		return 0, ErrShortTCPHeaderBuffer
-	}
-
-	off, err := h.Target.EncodeTo(dst)
+	var err error
+	dst, err = h.Target.EncodeTo(dst)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	binary.BigEndian.PutUint16(dst[off:off+2], h.PaddingLen)
-	off += 2
+	dst = binary.BigEndian.AppendUint16(dst, h.PaddingLen)
+	dst = append(dst, h.Padding...)
+	dst = append(dst, h.InitialData...)
 
-	copy(dst[off:off+len(h.Padding)], h.Padding)
-	off += len(h.Padding)
-
-	copy(dst[off:off+len(h.InitialData)], h.InitialData)
-	off += len(h.InitialData)
-
-	return off, nil
+	return dst, nil
 }
 
 // String returns a human-readable representation of the variable request header.

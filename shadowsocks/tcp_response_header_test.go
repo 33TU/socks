@@ -85,12 +85,12 @@ func TestTCPResponseHeader_EncodeTo_Decode_RoundTrip(t *testing.T) {
 
 	buf := make([]byte, want.EncodedLen())
 
-	nw, err := want.EncodeTo(buf)
+	bw, err := want.EncodeTo(buf[:0])
 	if err != nil {
 		t.Fatalf("EncodeTo() failed: %v", err)
 	}
-	if nw != len(buf) {
-		t.Fatalf("EncodeTo() wrote %d bytes, want %d", nw, len(buf))
+	if len(bw) != len(buf) {
+		t.Fatalf("EncodeTo() wrote %d bytes, want %d", len(bw), len(buf))
 	}
 
 	var got shadowsocks.TCPResponseHeader
@@ -149,23 +149,12 @@ func TestTCPResponseHeader_EncodeTo_Invalid(t *testing.T) {
 			bufLen:  32,
 			wantErr: shadowsocks.ErrInvalidTCPResponseSaltLen,
 		},
-		{
-			name: "short buffer",
-			hdr: shadowsocks.TCPResponseHeader{
-				Type:        shadowsocks.TCPHeaderTypeServerStream,
-				Timestamp:   1,
-				RequestSalt: []byte{1, 2, 3, 4},
-				Length:      4,
-			},
-			bufLen:  shadowsocks.TcpResponseFixedBaseLen + 3,
-			wantErr: shadowsocks.ErrShortTCPHeaderBuffer,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, tt.bufLen)
-			_, err := tt.hdr.EncodeTo(buf)
+			_, err := tt.hdr.EncodeTo(buf[:0])
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("EncodeTo() error = %v, wantErr = %v", err, tt.wantErr)
 			}

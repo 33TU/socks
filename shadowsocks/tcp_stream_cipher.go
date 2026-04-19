@@ -155,25 +155,17 @@ func (s *TCPStreamCipher) DecodeChunkPayloadTo(dst, src []byte) ([]byte, error) 
 }
 
 // EncodeRequestFixedHeaderTo encodes and encrypts a TCP request fixed header into dst.
-// scratch is used as the plaintext scratch buffer and may be nil.
 func (s *TCPStreamCipher) EncodeRequestFixedHeaderTo(dst []byte, h *TCPRequestFixedHeader, scratch []byte) ([]byte, error) {
 	if h == nil {
 		return nil, fmt.Errorf("nil TCP request fixed header")
 	}
 
-	plain := scratch[:0]
-	if cap(plain) >= h.EncodedLen() {
-		plain = plain[:h.EncodedLen()]
-	} else {
-		plain = make([]byte, h.EncodedLen())
-	}
-
-	n, err := h.EncodeTo(plain)
+	plain, err := h.EncodeTo(scratch[:0])
 	if err != nil {
 		return nil, err
 	}
 
-	return s.SealTo(dst, plain[:n])
+	return s.SealTo(dst, plain)
 }
 
 // DecodeRequestFixedHeader decrypts and decodes a TCP request fixed header from src.
@@ -198,19 +190,12 @@ func (s *TCPStreamCipher) EncodeRequestVariableHeaderTo(dst []byte, h *TCPReques
 		return nil, fmt.Errorf("nil TCP request variable header")
 	}
 
-	plain := scratch[:0]
-	if cap(plain) >= h.EncodedLen() {
-		plain = plain[:h.EncodedLen()]
-	} else {
-		plain = make([]byte, h.EncodedLen())
-	}
-
-	n, err := h.EncodeTo(plain)
+	plain, err := h.EncodeTo(scratch[:0])
 	if err != nil {
 		return nil, err
 	}
 
-	return s.SealTo(dst, plain[:n])
+	return s.SealTo(dst, plain)
 }
 
 // DecodeRequestVariableHeader decrypts and decodes a TCP request variable header from src.
@@ -235,19 +220,12 @@ func (s *TCPStreamCipher) EncodeResponseHeaderTo(dst []byte, h *TCPResponseHeade
 		return nil, fmt.Errorf("nil TCP response header")
 	}
 
-	plain := scratch[:0]
-	if cap(plain) >= h.EncodedLen() {
-		plain = plain[:h.EncodedLen()]
-	} else {
-		plain = make([]byte, h.EncodedLen())
-	}
-
-	n, err := h.EncodeTo(plain)
+	plain, err := h.EncodeTo(scratch[:0])
 	if err != nil {
 		return nil, err
 	}
 
-	return s.SealTo(dst, plain[:n])
+	return s.SealTo(dst, plain)
 }
 
 // DecodeResponseHeader decrypts and decodes a TCP response header from src.

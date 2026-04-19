@@ -148,12 +148,12 @@ func TestTCPRequestVariableHeader_EncodeTo_Decode_RoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, tt.hdr.EncodedLen())
 
-			nw, err := tt.hdr.EncodeTo(buf)
+			bw, err := tt.hdr.EncodeTo(buf[:0])
 			if err != nil {
 				t.Fatalf("EncodeTo() failed: %v", err)
 			}
-			if nw != len(buf) {
-				t.Fatalf("EncodeTo() wrote %d bytes, want %d", nw, len(buf))
+			if len(bw) != len(buf) {
+				t.Fatalf("EncodeTo() wrote %d bytes, want %d", len(bw), len(buf))
 			}
 
 			var got shadowsocks.TCPRequestVariableHeader
@@ -233,17 +233,6 @@ func TestTCPRequestVariableHeader_EncodeTo_Invalid(t *testing.T) {
 			bufLen:  64,
 			wantErr: shadowsocks.ErrMissingTCPHeaderData,
 		},
-		{
-			name: "short buffer",
-			hdr: shadowsocks.TCPRequestVariableHeader{
-				Target:      validTarget,
-				PaddingLen:  1,
-				Padding:     []byte{1},
-				InitialData: []byte("a"),
-			},
-			bufLen:  1,
-			wantErr: shadowsocks.ErrShortTCPHeaderBuffer,
-		},
 	}
 
 	for _, tt := range tests {
@@ -263,8 +252,7 @@ func TestTCPRequestVariableHeader_Decode_Invalid(t *testing.T) {
 		Domain:   "example.com",
 		Port:     443,
 	}
-	validTargetBuf := make([]byte, validTarget.EncodedLen())
-	_, err := validTarget.EncodeTo(validTargetBuf)
+	validTargetBuf, err := validTarget.EncodeTo(nil)
 	if err != nil {
 		t.Fatalf("target EncodeTo() failed: %v", err)
 	}

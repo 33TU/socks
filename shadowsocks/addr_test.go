@@ -273,12 +273,12 @@ func TestAddr_EncodeTo_Decode_RoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, tt.addr.EncodedLen())
 
-			nw, err := tt.addr.EncodeTo(buf)
+			bw, err := tt.addr.EncodeTo(buf[:0])
 			if err != nil {
 				t.Fatalf("EncodeTo() failed: %v", err)
 			}
-			if nw != len(buf) {
-				t.Fatalf("EncodeTo() wrote %d bytes, want %d", nw, len(buf))
+			if len(bw) != len(buf) {
+				t.Fatalf("EncodeTo() wrote %d bytes, want %d", len(bw), len(buf))
 			}
 
 			var got shadowsocks.Addr
@@ -332,16 +332,6 @@ func TestAddr_EncodeTo_Invalid(t *testing.T) {
 			wantErr: shadowsocks.ErrInvalidAddrType,
 		},
 		{
-			name: "short buffer",
-			addr: shadowsocks.Addr{
-				AddrType: shadowsocks.AddrTypeIPv4,
-				IP:       net.IPv4(127, 0, 0, 1),
-				Port:     1080,
-			},
-			bufLen:  6,
-			wantErr: shadowsocks.ErrShortAddrBuffer,
-		},
-		{
 			name: "invalid domain",
 			addr: shadowsocks.Addr{
 				AddrType: shadowsocks.AddrTypeDomain,
@@ -356,7 +346,7 @@ func TestAddr_EncodeTo_Invalid(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := make([]byte, tt.bufLen)
-			_, err := tt.addr.EncodeTo(buf)
+			_, err := tt.addr.EncodeTo(buf[:0])
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("EncodeTo() error = %v, wantErr = %v", err, tt.wantErr)
 			}

@@ -49,20 +49,16 @@ func (h *TCPRequestFixedHeader) Decode(src []byte) (int, error) {
 }
 
 // EncodeTo encodes the fixed request header into dst.
-// It returns the number of bytes written.
-func (h *TCPRequestFixedHeader) EncodeTo(dst []byte) (int, error) {
+func (h *TCPRequestFixedHeader) EncodeTo(dst []byte) ([]byte, error) {
 	if err := h.Validate(); err != nil {
-		return 0, err
-	}
-	if len(dst) < TcpRequestFixedHeaderLen {
-		return 0, ErrShortTCPHeaderBuffer
+		return nil, err
 	}
 
-	dst[0] = h.Type
-	binary.BigEndian.PutUint64(dst[1:9], h.Timestamp)
-	binary.BigEndian.PutUint16(dst[9:11], h.Length)
+	dst = append(dst, h.Type)
+	dst = binary.BigEndian.AppendUint64(dst, h.Timestamp)
+	dst = binary.BigEndian.AppendUint16(dst, h.Length)
 
-	return TcpRequestFixedHeaderLen, nil
+	return dst, nil
 }
 
 // String returns a human-readable representation of the fixed request header.
