@@ -4,10 +4,12 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	socksnet "github.com/33TU/socks/net"
 	"github.com/33TU/socks/socks4"
 )
 
@@ -222,5 +224,100 @@ func TestDialer_Connect_WithDeadline(t *testing.T) {
 		!strings.Contains(err.Error(), "deadline") &&
 		!strings.Contains(err.Error(), "i/o timeout") {
 		t.Logf("got error (acceptable): %v", err) // Log but don't fail - different error types are OK
+	}
+}
+
+func TestNewDialerFromURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		rawURL     string
+		wantAddr   string
+		wantUserID string
+		wantErr    string
+	}{
+		{
+			name:       "socks4 without user",
+			rawURL:     "socks4://127.0.0.1:1080",
+			wantAddr:   "127.0.0.1:1080",
+			wantUserID: "",
+		},
+		{
+			name:       "socks4a with user",
+			rawURL:     "socks4a://tester@proxy.example.com:9050",
+			wantAddr:   "proxy.example.com:9050",
+			wantUserID: "tester",
+		},
+		{
+			name:    "invalid scheme",
+			rawURL:  "http://127.0.0.1:1080",
+			wantErr: "invalid scheme",
+		},
+		{
+			name:    "missing host",
+			rawURL:  "socks4://:1080",
+			wantErr: "missing host",
+		},
+		{
+			name:    "missing port",
+			rawURL:  "socks4://127.0.0.1",
+			wantErr: "missing port",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			u, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", tt.rawURL, err)
+			}
+
+			d, err := socks4.NewDialerFromURL(u, nil)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if got := err.Error(); got == "" || !strings.Contains(got, tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %q", tt.wantErr, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewDialerFromURL() error = %v", err)
+			}
+
+			if d.ProxyAddr != tt.wantAddr {
+				t.Fatalf("ProxyAddr = %q, want %q", d.ProxyAddr, tt.wantAddr)
+			}
+			if d.UserID != tt.wantUserID {
+				t.Fatalf("UserID = %q, want %q", d.UserID, tt.wantUserID)
+			}
+			if d.Dialer == nil {
+				t.Fatal("Dialer is nil, want default dialer")
+			}
+		})
+	}
+}
+
+func TestNewDialerFromURL_CustomDialer_SOCKS4(t *testing.T) {
+	t.Parallel()
+
+	u, err := url.Parse("socks4://user@127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+
+	custom := socksnet.DefaultDialer
+	d, err := socks4.NewDialerFromURL(u, custom)
+	if err != nil {
+		t.Fatalf("NewDialerFromURL() error = %v", err)
+	}
+
+	if d.Dialer == nil {
+		t.Fatal("Dialer is nil")
 	}
 }

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	socksnet "github.com/33TU/socks/net"
 	"github.com/33TU/socks/socks5"
 )
 
@@ -803,5 +805,127 @@ func TestDialer_Connect_WithDeadline(t *testing.T) {
 		!strings.Contains(err.Error(), "deadline") &&
 		!strings.Contains(err.Error(), "i/o timeout") {
 		t.Logf("got error (acceptable): %v", err) // Log but don't fail - different error types are OK
+	}
+}
+
+func TestNewDialerFromURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		rawURL   string
+		wantAddr string
+		wantAuth *socks5.Auth
+		wantErr  string
+	}{
+		{
+			name:     "socks5 without auth",
+			rawURL:   "socks5://127.0.0.1:1080",
+			wantAddr: "127.0.0.1:1080",
+			wantAuth: nil,
+		},
+		{
+			name:     "socks5h without auth",
+			rawURL:   "socks5h://proxy.example.com:9050",
+			wantAddr: "proxy.example.com:9050",
+			wantAuth: nil,
+		},
+		{
+			name:     "username and password",
+			rawURL:   "socks5://user:pass@127.0.0.1:1080",
+			wantAddr: "127.0.0.1:1080",
+			wantAuth: &socks5.Auth{
+				Username: "user",
+				Password: "pass",
+			},
+		},
+		{
+			name:     "username only",
+			rawURL:   "socks5://user@127.0.0.1:1080",
+			wantAddr: "127.0.0.1:1080",
+			wantAuth: &socks5.Auth{
+				Username: "user",
+				Password: "",
+			},
+		},
+		{
+			name:    "invalid scheme",
+			rawURL:  "http://127.0.0.1:1080",
+			wantErr: "invalid scheme",
+		},
+		{
+			name:    "missing host",
+			rawURL:  "socks5://:1080",
+			wantErr: "missing host",
+		},
+		{
+			name:    "missing port",
+			rawURL:  "socks5://127.0.0.1",
+			wantErr: "missing port",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			u, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", tt.rawURL, err)
+			}
+
+			d, err := socks5.NewDialerFromURL(u, nil)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if got := err.Error(); !strings.Contains(got, tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %q", tt.wantErr, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewDialerFromURL() error = %v", err)
+			}
+
+			if d.ProxyAddr != tt.wantAddr {
+				t.Fatalf("ProxyAddr = %q, want %q", d.ProxyAddr, tt.wantAddr)
+			}
+
+			switch {
+			case tt.wantAuth == nil && d.Auth != nil:
+				t.Fatalf("Auth = %#v, want nil", d.Auth)
+			case tt.wantAuth != nil && d.Auth == nil:
+				t.Fatalf("Auth = nil, want %#v", tt.wantAuth)
+			case tt.wantAuth != nil && d.Auth != nil:
+				if *d.Auth != *tt.wantAuth {
+					t.Fatalf("Auth = %#v, want %#v", *d.Auth, *tt.wantAuth)
+				}
+			}
+
+			if d.Dialer == nil {
+				t.Fatal("Dialer is nil, want default dialer")
+			}
+		})
+	}
+}
+
+func TestNewDialerFromURL_CustomDialer_SOCKS5(t *testing.T) {
+	t.Parallel()
+
+	u, err := url.Parse("socks5://user:pass@127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+
+	custom := socksnet.DefaultDialer
+	d, err := socks5.NewDialerFromURL(u, custom)
+	if err != nil {
+		t.Fatalf("NewDialerFromURL() error = %v", err)
+	}
+
+	if d.Dialer == nil {
+		t.Fatal("Dialer is nil")
 	}
 }
