@@ -67,7 +67,7 @@ func (s *TCPStreamCipher) SealTo(dst, plaintext []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	out := s.AEAD.Seal(dst[:0], s.Nonce[:], plaintext, nil)
+	out := s.AEAD.Seal(dst, s.Nonce[:], plaintext, nil)
 	s.incNonce()
 	return out, nil
 }
@@ -81,7 +81,7 @@ func (s *TCPStreamCipher) OpenTo(dst, ciphertext []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	out, err := s.AEAD.Open(dst[:0], s.Nonce[:], ciphertext, nil)
+	out, err := s.AEAD.Open(dst, s.Nonce[:], ciphertext, nil)
 	if err != nil {
 		return nil, err
 	}

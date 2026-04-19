@@ -162,7 +162,7 @@ func TestTCPClientRequestStart_WriteRequestStart(t *testing.T) {
 	initialData := []byte("hello")
 
 	var buf bytes.Buffer
-	n, err := s.WriteRequestStart(&buf, ts, target, padding, initialData, nil)
+	n, err := s.WriteRequestStart(&buf, ts, target, padding, initialData)
 	if err != nil {
 		t.Fatalf("WriteRequestStart() error = %v", err)
 	}
@@ -206,7 +206,6 @@ func TestTCPClientRequestStart_WriteRequestStart_InvalidTarget(t *testing.T) {
 		shadowsocks.Addr{},
 		nil,
 		[]byte("x"),
-		nil,
 	)
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -353,7 +352,7 @@ func TestTCPClientRequestStart_ReadResponseStart(t *testing.T) {
 	wire.Write(responseSalt)
 	wire.Write(encHeader)
 
-	resp, n, err := clientStart.ReadResponseStart(&wire, nil)
+	resp, n, err := clientStart.ReadResponseStart(&wire)
 	if err != nil {
 		t.Fatalf("ReadResponseStart() error = %v", err)
 	}
@@ -390,7 +389,7 @@ func TestTCPClientRequestStart_ReadResponseStart_ShortRead(t *testing.T) {
 
 	short := bytes.NewReader(make([]byte, method.SaltSize-1))
 
-	_, n, err := clientStart.ReadResponseStart(short, nil)
+	_, n, err := clientStart.ReadResponseStart(short)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -443,7 +442,7 @@ func TestTCPClientRequestStart_ReadResponseStart_RequestSaltMismatch(t *testing.
 	wire.Write(responseSalt)
 	wire.Write(encHeader)
 
-	_, _, err = clientStart.ReadResponseStart(&wire, nil)
+	_, _, err = clientStart.ReadResponseStart(&wire)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

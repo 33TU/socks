@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	ibuf "github.com/33TU/socks/internal"
 )
 
 const tcpClientRequestStartStackBufSize = 1024
@@ -86,14 +88,13 @@ func (s *TCPClientRequestStart) EncodedRequestStartLen(variableHeaderLen int) (i
 //	request salt || encrypted request fixed header || encrypted request variable header
 //
 // The request fixed header Length field is set to the plaintext encoded variable
-// header length. scratch may be nil.
+// header length.
 func (s *TCPClientRequestStart) WriteRequestStart(
 	dst io.Writer,
 	timestamp time.Time,
 	target Addr,
 	padding []byte,
 	initialData []byte,
-	scratch []byte,
 ) (int64, error) {
 	if err := s.Validate(); err != nil {
 		return 0, err
@@ -112,22 +113,29 @@ func (s *TCPClientRequestStart) WriteRequestStart(
 		uint16(variableHeader.EncodedLen()),
 	)
 
+	scratchLen := TcpRequestFixedHeaderLen
+	if variableHeader.EncodedLen() > scratchLen {
+		scratchLen = variableHeader.EncodedLen()
+	}
+
+	plainScratch := ibuf.GetBytes(scratchLen)
+	defer ibuf.PutBytes(plainScratch)
+
 	var stackBuf [tcpClientRequestStartStackBufSize]byte
 	out := stackBuf[:0]
 
 	out = append(out, s.RequestSalt...)
 
-	encFixed, err := s.RequestCipher.EncodeRequestFixedHeaderTo(scratch[:0], &fixedHeader, nil)
+	var err error
+	out, err = s.RequestCipher.EncodeRequestFixedHeaderTo(out, &fixedHeader, plainScratch[:0])
 	if err != nil {
 		return 0, err
 	}
-	out = append(out, encFixed...)
 
-	encVariable, err := s.RequestCipher.EncodeRequestVariableHeaderTo(scratch[:0], &variableHeader, nil)
+	out, err = s.RequestCipher.EncodeRequestVariableHeaderTo(out, &variableHeader, plainScratch[:0])
 	if err != nil {
 		return 0, err
 	}
-	out = append(out, encVariable...)
 
 	n, err := dst.Write(out)
 	return int64(n), err
@@ -173,11 +181,8 @@ func (s *TCPClientResponseStart) Validate(method Method, requestSalt []byte) err
 // ReadResponseStart reads and decrypts the server response startup:
 //
 //	response salt || encrypted response header
-//
-// scratch may be nil.
 func (s *TCPClientRequestStart) ReadResponseStart(
 	src io.Reader,
-	scratch []byte,
 ) (*TCPClientResponseStart, int64, error) {
 	if err := s.Validate(); err != nil {
 		return nil, 0, err
@@ -186,12 +191,8 @@ func (s *TCPClientRequestStart) ReadResponseStart(
 	var total int64
 
 	responseSaltLen := s.Method.SaltSize
-	var responseSaltBuf []byte
-	if cap(scratch) >= responseSaltLen {
-		responseSaltBuf = scratch[:responseSaltLen]
-	} else {
-		responseSaltBuf = make([]byte, responseSaltLen)
-	}
+	responseSaltBuf := ibuf.GetBytes(responseSaltLen)
+	defer ibuf.PutBytes(responseSaltBuf)
 
 	n, err := io.ReadFull(src, responseSaltBuf)
 	total += int64(n)
@@ -205,12 +206,8 @@ func (s *TCPClientRequestStart) ReadResponseStart(
 	}
 
 	encHeaderLen := TcpResponseFixedBaseLen + s.Method.SaltSize + s.Method.TagSize
-	var encHeader []byte
-	if cap(encHeader) >= encHeaderLen {
-		encHeader = encHeader[:encHeaderLen]
-	} else {
-		encHeader = make([]byte, encHeaderLen)
-	}
+	encHeader := ibuf.GetBytes(encHeaderLen)
+	defer ibuf.PutBytes(encHeader)
 
 	n, err = io.ReadFull(src, encHeader)
 	total += int64(n)
@@ -218,7 +215,10 @@ func (s *TCPClientRequestStart) ReadResponseStart(
 		return nil, total, err
 	}
 
-	header, err := responseCipher.DecodeResponseHeader(encHeader, scratch[:0])
+	plainScratch := ibuf.GetBytes(TcpResponseFixedBaseLen + s.Method.SaltSize)
+	defer ibuf.PutBytes(plainScratch)
+
+	header, err := responseCipher.DecodeResponseHeader(encHeader, plainScratch[:0])
 	if err != nil {
 		return nil, total, err
 	}

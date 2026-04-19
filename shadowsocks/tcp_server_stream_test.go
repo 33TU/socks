@@ -199,7 +199,7 @@ func TestTCPServerRequestStart_ReadRequestStart(t *testing.T) {
 	wire.Write(encVariable)
 
 	var s shadowsocks.TCPServerRequestStart
-	n, err := s.ReadRequestStart(&wire, method, psk, nil)
+	n, err := s.ReadRequestStart(&wire, method, psk)
 	if err != nil {
 		t.Fatalf("ReadRequestStart() error = %v", err)
 	}
@@ -251,7 +251,7 @@ func TestTCPServerRequestStart_ReadRequestStart_ShortRead(t *testing.T) {
 	short := bytes.NewReader(make([]byte, method.SaltSize-1))
 
 	var s shadowsocks.TCPServerRequestStart
-	n, err := s.ReadRequestStart(short, method, psk, nil)
+	n, err := s.ReadRequestStart(short, method, psk)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -273,7 +273,7 @@ func TestTCPServerRequestStart_ReadRequestStart_InvalidPSK(t *testing.T) {
 	wire.Write(requestSalt)
 
 	var s shadowsocks.TCPServerRequestStart
-	_, err := s.ReadRequestStart(&wire, method, psk[:len(psk)-1], nil)
+	_, err := s.ReadRequestStart(&wire, method, psk[:len(psk)-1])
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -419,7 +419,7 @@ func TestTCPServerResponseStart_WriteResponseStart(t *testing.T) {
 	ts := time.Unix(1700000100, 0)
 
 	var buf bytes.Buffer
-	n, err := s.WriteResponseStart(&buf, ts, requestSalt, nil)
+	n, err := s.WriteResponseStart(&buf, ts, requestSalt)
 	if err != nil {
 		t.Fatalf("WriteResponseStart() error = %v", err)
 	}
@@ -460,7 +460,7 @@ func TestTCPServerResponseStart_WriteResponseStart_InvalidRequestSalt(t *testing
 	}
 
 	var buf bytes.Buffer
-	_, err := s.WriteResponseStart(&buf, time.Unix(1700000100, 0), responseSalt[:len(responseSalt)-1], nil)
+	_, err := s.WriteResponseStart(&buf, time.Unix(1700000100, 0), responseSalt[:len(responseSalt)-1])
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -478,7 +478,7 @@ func TestTCPServerResponseStart_WriteResponseStart_NilReceiver(t *testing.T) {
 	var s *shadowsocks.TCPServerResponseStart
 	var buf bytes.Buffer
 
-	_, err := s.WriteResponseStart(&buf, time.Unix(1700000100, 0), requestSalt, nil)
+	_, err := s.WriteResponseStart(&buf, time.Unix(1700000100, 0), requestSalt)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
