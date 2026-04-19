@@ -5,12 +5,6 @@ import (
 	"fmt"
 )
 
-const (
-	Method2022Blake3AES128GCM        = "2022-blake3-aes-128-gcm"
-	Method2022Blake3AES256GCM        = "2022-blake3-aes-256-gcm"
-	Method2022Blake3ChaCha20Poly1305 = "2022-blake3-chacha20-poly1305"
-)
-
 // Config holds the configuration for a Shadowsocks proxy.
 type Config struct {
 	Method string
