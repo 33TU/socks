@@ -6,12 +6,13 @@ import (
 	"time"
 )
 
-type TcpConn struct {
+type TCPConn struct {
 	net.Conn
 
-	Reader  TCPChunkReader
-	Writer  TCPChunkWriter
-	readBuf []byte
+	Reader   TCPChunkReader
+	Writer   TCPChunkWriter
+	readBuf  []byte
+	chunkBuf []byte
 
 	responseMethod Method
 	responsePSK    []byte
@@ -25,7 +26,7 @@ func NewClientTCPConn(
 	target Addr,
 	padding []byte,
 	initialPayload []byte,
-) (*TcpConn, error) {
+) (*TCPConn, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("nil net.Conn")
 	}
@@ -63,7 +64,7 @@ func NewClientTCPConn(
 		return nil, err
 	}
 
-	return &TcpConn{
+	return &TCPConn{
 		Conn:           conn,
 		Writer:         writer,
 		responseMethod: method,
@@ -72,7 +73,7 @@ func NewClientTCPConn(
 	}, nil
 }
 
-func NewServerTCPConn(conn net.Conn, method Method, psk []byte) (*TcpConn, *ParsedTCPRequestStart, error) {
+func NewServerTCPConn(conn net.Conn, method Method, psk []byte) (*TCPConn, *ParsedTCPRequestStart, error) {
 	if conn == nil {
 		return nil, nil, fmt.Errorf("nil net.Conn")
 	}
@@ -93,21 +94,22 @@ func NewServerTCPConn(conn net.Conn, method Method, psk []byte) (*TcpConn, *Pars
 		return nil, nil, err
 	}
 
-	c := &TcpConn{
+	c := &TCPConn{
 		Conn:   conn,
 		Reader: reader,
 	}
 
 	if len(reqStart.Header.InitialData) > 0 {
-		c.readBuf = append([]byte(nil), reqStart.Header.InitialData...)
+		c.chunkBuf = append(c.chunkBuf[:0], reqStart.Header.InitialData...)
+		c.readBuf = c.chunkBuf
 	}
 
 	return c, reqStart, nil
 }
 
-func (c *TcpConn) InitResponse(method Method, psk []byte, requestSalt []byte, initialPayload []byte) error {
+func (c *TCPConn) InitResponse(method Method, psk []byte, requestSalt []byte, initialPayload []byte) error {
 	if c == nil {
-		return fmt.Errorf("nil TcpConn")
+		return fmt.Errorf("nil TCPConn")
 	}
 	if c.Conn == nil {
 		return fmt.Errorf("nil net.Conn")
@@ -143,9 +145,9 @@ func (c *TcpConn) InitResponse(method Method, psk []byte, requestSalt []byte, in
 	return c.Writer.Init(responseCipher)
 }
 
-func (c *TcpConn) ensureClientResponseReady() error {
+func (c *TCPConn) ensureClientResponseReady() error {
 	if c == nil {
-		return fmt.Errorf("nil TcpConn")
+		return fmt.Errorf("nil TCPConn")
 	}
 	if c.Conn == nil {
 		return fmt.Errorf("nil net.Conn")
@@ -173,18 +175,19 @@ func (c *TcpConn) ensureClientResponseReady() error {
 	}
 
 	if len(respStart.InitialPayload) > 0 {
-		c.readBuf = append(c.readBuf[:0], respStart.InitialPayload...)
+		c.chunkBuf = append(c.chunkBuf[:0], respStart.InitialPayload...)
+		c.readBuf = c.chunkBuf
 	}
 
 	return nil
 }
 
-func (c *TcpConn) Read(p []byte) (int, error) {
+func (c *TCPConn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
 	if c == nil {
-		return 0, fmt.Errorf("nil TcpConn")
+		return 0, fmt.Errorf("nil TCPConn")
 	}
 	if c.Reader.Cipher == nil {
 		if err := c.ensureClientResponseReady(); err != nil {
@@ -196,10 +199,11 @@ func (c *TcpConn) Read(p []byte) (int, error) {
 	}
 
 	if len(c.readBuf) == 0 {
-		buf, _, err := c.Reader.ReadChunkTo(nil, c.Conn)
+		buf, _, err := c.Reader.ReadChunkTo(c.chunkBuf[:0], c.Conn)
 		if err != nil {
 			return 0, err
 		}
+		c.chunkBuf = buf
 		c.readBuf = buf
 	}
 
@@ -208,12 +212,12 @@ func (c *TcpConn) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func (c *TcpConn) Write(p []byte) (int, error) {
+func (c *TCPConn) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
 	if c == nil {
-		return 0, fmt.Errorf("nil TcpConn")
+		return 0, fmt.Errorf("nil TCPConn")
 	}
 	if c.Writer.Cipher == nil {
 		return 0, fmt.Errorf("TCP writer not initialized")
@@ -231,4 +235,4 @@ func (c *TcpConn) Write(p []byte) (int, error) {
 	return written, nil
 }
 
-var _ net.Conn = (*TcpConn)(nil)
+var _ net.Conn = (*TCPConn)(nil)

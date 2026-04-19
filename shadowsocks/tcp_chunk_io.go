@@ -3,13 +3,15 @@ package shadowsocks
 import (
 	"fmt"
 	"io"
-
-	ibuf "github.com/33TU/socks/internal"
 )
 
 // TCPChunkReader reads encrypted Shadowsocks 2022 TCP chunks.
 type TCPChunkReader struct {
 	Cipher *TCPStreamCipher
+
+	encLenBuf     []byte
+	encPayloadBuf []byte
+	lenScratch    [TcpChunkLengthLen]byte
 }
 
 // Init initializes the chunk reader for a TCP stream cipher.
@@ -22,6 +24,15 @@ func (r *TCPChunkReader) Init(c *TCPStreamCipher) error {
 	}
 
 	r.Cipher = c
+
+	encLenSize := c.EncryptedChunkLength()
+	if cap(r.encLenBuf) < encLenSize {
+		r.encLenBuf = make([]byte, encLenSize)
+	} else {
+		r.encLenBuf = r.encLenBuf[:encLenSize]
+	}
+
+	r.encPayloadBuf = r.encPayloadBuf[:0]
 	return nil
 }
 
@@ -46,33 +57,31 @@ func (r *TCPChunkReader) ReadChunkTo(dst []byte, src io.Reader) ([]byte, int64, 
 
 	var total int64
 
-	encLenBuf := ibuf.GetBytes(r.Cipher.EncryptedChunkLength())
-	defer ibuf.PutBytes(encLenBuf)
-
-	n, err := io.ReadFull(src, encLenBuf)
+	n, err := io.ReadFull(src, r.encLenBuf)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
 
-	lenScratch := ibuf.GetBytes(TcpChunkLengthLen)
-	defer ibuf.PutBytes(lenScratch)
-
-	payloadLen, err := r.Cipher.DecodeChunkLength(encLenBuf, lenScratch[:0])
+	payloadLen, err := r.Cipher.DecodeChunkLength(r.encLenBuf, r.lenScratch[:0])
 	if err != nil {
 		return nil, total, err
 	}
 
-	encPayloadBuf := ibuf.GetBytes(r.Cipher.EncryptedPayloadLength(int(payloadLen)))
-	defer ibuf.PutBytes(encPayloadBuf)
+	encPayloadLen := r.Cipher.EncryptedPayloadLength(int(payloadLen))
+	if cap(r.encPayloadBuf) < encPayloadLen {
+		r.encPayloadBuf = make([]byte, encPayloadLen)
+	} else {
+		r.encPayloadBuf = r.encPayloadBuf[:encPayloadLen]
+	}
 
-	n, err = io.ReadFull(src, encPayloadBuf)
+	n, err = io.ReadFull(src, r.encPayloadBuf)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
 
-	dst, err = r.Cipher.DecodeChunkPayloadTo(dst, encPayloadBuf)
+	dst, err = r.Cipher.DecodeChunkPayloadTo(dst, r.encPayloadBuf)
 	if err != nil {
 		return nil, total, err
 	}
@@ -83,6 +92,7 @@ func (r *TCPChunkReader) ReadChunkTo(dst []byte, src io.Reader) ([]byte, int64, 
 // TCPChunkWriter writes encrypted Shadowsocks 2022 TCP chunks.
 type TCPChunkWriter struct {
 	Cipher *TCPStreamCipher
+	outBuf []byte
 }
 
 // Init initializes the chunk writer for a TCP stream cipher.
@@ -95,6 +105,7 @@ func (w *TCPChunkWriter) Init(c *TCPStreamCipher) error {
 	}
 
 	w.Cipher = c
+	w.outBuf = w.outBuf[:0]
 	return nil
 }
 
@@ -119,25 +130,24 @@ func (w *TCPChunkWriter) WriteChunk(dst io.Writer, payload []byte) (int64, error
 		return 0, fmt.Errorf("payload too large: got %d, max %d", len(payload), 0xFFFF)
 	}
 
-	out := ibuf.GetBytes(
-		w.Cipher.EncryptedChunkLength() +
-			w.Cipher.EncryptedPayloadLength(len(payload)),
-	)
-	defer ibuf.PutBytes(out)
-
-	out = out[:0]
+	need := w.Cipher.EncryptedChunkLength() + w.Cipher.EncryptedPayloadLength(len(payload))
+	if cap(w.outBuf) < need {
+		w.outBuf = make([]byte, 0, need)
+	} else {
+		w.outBuf = w.outBuf[:0]
+	}
 
 	var err error
-	out, err = w.Cipher.EncodeChunkLengthTo(out, uint16(len(payload)))
+	w.outBuf, err = w.Cipher.EncodeChunkLengthTo(w.outBuf, uint16(len(payload)))
 	if err != nil {
 		return 0, err
 	}
 
-	out, err = w.Cipher.EncodeChunkPayloadTo(out, payload)
+	w.outBuf, err = w.Cipher.EncodeChunkPayloadTo(w.outBuf, payload)
 	if err != nil {
 		return 0, err
 	}
 
-	n, err := dst.Write(out)
+	n, err := dst.Write(w.outBuf)
 	return int64(n), err
 }

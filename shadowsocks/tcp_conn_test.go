@@ -72,7 +72,7 @@ func TestTCPConn_Read(t *testing.T) {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
-	c := &shadowsocks.TcpConn{
+	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
 		Reader: reader,
 		Writer: writer,
@@ -119,7 +119,7 @@ func TestTCPConn_Read_PartialBuffered(t *testing.T) {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
-	c := &shadowsocks.TcpConn{
+	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
 		Reader: reader,
 		Writer: writer,
@@ -178,7 +178,7 @@ func TestTCPConn_Write(t *testing.T) {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
-	c := &shadowsocks.TcpConn{
+	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
 		Reader: reader,
 		Writer: writer,
@@ -234,7 +234,7 @@ func TestTCPConn_Write_Empty(t *testing.T) {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
-	c := &shadowsocks.TcpConn{
+	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
 		Reader: reader,
 		Writer: writer,
@@ -268,7 +268,7 @@ func TestTCPConn_Write_SplitsLargePayload(t *testing.T) {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
-	c := &shadowsocks.TcpConn{
+	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
 		Reader: reader,
 		Writer: writer,
