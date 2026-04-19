@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -52,6 +53,43 @@ func NewDialer(proxyAddr string, auth *Auth, dialer socksnet.Dialer) *Dialer {
 		Auth:      auth,
 		Dialer:    dialer,
 	}
+}
+
+// NewDialerFromURL creates a new Dialer from a URL of the form
+// socks5://[user:pass@]host:port or socks5h://[user:pass@]host:port.
+func NewDialerFromURL(u *url.URL, dialer socksnet.Dialer) (*Dialer, error) {
+	switch u.Scheme {
+	case "socks5", "socks5h":
+	default:
+		return nil, fmt.Errorf("invalid scheme: %s", u.Scheme)
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("missing host in proxy URL")
+	}
+
+	port := u.Port()
+	if port == "" {
+		return nil, fmt.Errorf("missing port in proxy URL")
+	}
+
+	proxyAddr := net.JoinHostPort(host, port)
+
+	var auth *Auth
+	if u.User != nil {
+		username := u.User.Username()
+		password, hasPassword := u.User.Password()
+
+		if username != "" || hasPassword {
+			auth = &Auth{
+				Username: username,
+				Password: password,
+			}
+		}
+	}
+
+	return NewDialer(proxyAddr, auth, dialer), nil
 }
 
 // ProxyAddress returns the configured SOCKS5 proxy address.
