@@ -303,18 +303,13 @@ func TestNewDialerFromURL(t *testing.T) {
 	}
 }
 
-func TestNewDialerFromURL_CustomDialer_SOCKS4(t *testing.T) {
+func TestNewDialerFromURLString_CustomDialer_SOCKS4(t *testing.T) {
 	t.Parallel()
 
-	u, err := url.Parse("socks4://user@127.0.0.1:1080")
-	if err != nil {
-		t.Fatalf("url.Parse: %v", err)
-	}
-
 	custom := socksnet.DefaultDialer
-	d, err := socks4.NewDialerFromURL(u, custom)
+	d, err := socks4.NewDialerFromURLString("socks4://user@127.0.0.1:1080", custom)
 	if err != nil {
-		t.Fatalf("NewDialerFromURL() error = %v", err)
+		t.Fatalf("NewDialerFromURLString() error = %v", err)
 	}
 
 	if d.Dialer == nil {
