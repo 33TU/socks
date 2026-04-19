@@ -149,36 +149,16 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 		return nil, err
 	}
 
-	requestSalt := make([]byte, method.SaltSize)
-	if err := FillSaltTo(requestSalt, method); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
 	// cancellation and deadline handling
 	cleanup := bindConnToContext(ctx, conn)
 	defer cleanup()
 
-	requestCipher, _, err := WriteTCPRequestStart(conn, method, psk, requestSalt, time.Now(), target, []byte{0}, nil)
+	ssConn, err := NewClientTCPConn(conn, method, psk, target, []byte{0}, nil)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
-
-	var writer TCPChunkWriter
-	if err := writer.Init(requestCipher); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	return &TcpConn{
-		Conn:          conn,
-		Writer:        writer,
-		requestMethod: method,
-		requestPSK:    append([]byte(nil), psk...),
-		requestSalt:   append([]byte(nil), requestSalt...),
-		requestCipher: requestCipher,
-	}, nil
+	return ssConn, nil
 }
 
 // DialConn upgrades an existing connection using background context.
