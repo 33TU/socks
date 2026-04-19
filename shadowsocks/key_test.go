@@ -129,7 +129,7 @@ func TestFillSalt(t *testing.T) {
 		t.Parallel()
 
 		salt := make([]byte, method.SaltSize)
-		if err := shadowsocks.FillSalt(salt, method); err != nil {
+		if err := shadowsocks.FillSaltTo(salt, method); err != nil {
 			t.Fatalf("FillSalt() error = %v", err)
 		}
 
@@ -146,7 +146,7 @@ func TestFillSalt(t *testing.T) {
 		t.Parallel()
 
 		salt := make([]byte, method.SaltSize-1)
-		err := shadowsocks.FillSalt(salt, method)
+		err := shadowsocks.FillSaltTo(salt, method)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -158,7 +158,7 @@ func TestFillSalt(t *testing.T) {
 	t.Run("invalid method", func(t *testing.T) {
 		t.Parallel()
 
-		err := shadowsocks.FillSalt(make([]byte, 16), shadowsocks.Method{})
+		err := shadowsocks.FillSaltTo(make([]byte, 16), shadowsocks.Method{})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}

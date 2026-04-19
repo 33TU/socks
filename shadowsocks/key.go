@@ -32,8 +32,8 @@ func DecodePSKTo(dst []byte, method Method, s string) ([]byte, error) {
 	return key, nil
 }
 
-// FillSalt fills dst with a random salt for the given method.
-func FillSalt(dst []byte, method Method) error {
+// FillSaltTo fills dst with a random salt for the given method.
+func FillSaltTo(dst []byte, method Method) error {
 	if err := method.Validate(); err != nil {
 		return err
 	}
