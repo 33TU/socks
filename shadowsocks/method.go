@@ -8,11 +8,6 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-const (
-	aeadNonceSize = 12
-	aeadTagSize   = 16
-)
-
 // MethodKind identifies the AEAD cipher family used by a Shadowsocks method.
 type MethodKind uint8
 
@@ -36,24 +31,24 @@ var (
 		Kind:      MethodKindAESGCM,
 		KeySize:   16,
 		SaltSize:  16,
-		NonceSize: aeadNonceSize,
-		TagSize:   aeadTagSize,
+		NonceSize: AeadNonceSize,
+		TagSize:   AeadTagSize,
 	}
 
 	method2022Blake3AES256GCM = Method{
 		Kind:      MethodKindAESGCM,
 		KeySize:   32,
 		SaltSize:  32,
-		NonceSize: aeadNonceSize,
-		TagSize:   aeadTagSize,
+		NonceSize: AeadNonceSize,
+		TagSize:   AeadTagSize,
 	}
 
 	method2022Blake3ChaCha20Poly1305 = Method{
 		Kind:      MethodKindChaCha20Poly1305,
 		KeySize:   32,
 		SaltSize:  32,
-		NonceSize: aeadNonceSize,
-		TagSize:   aeadTagSize,
+		NonceSize: AeadNonceSize,
+		TagSize:   AeadTagSize,
 	}
 )
 

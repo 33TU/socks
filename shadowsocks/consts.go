@@ -24,3 +24,10 @@ const (
 	TcpRequestFixedHeaderLen = 1 + 8 + 2
 	TcpResponseFixedBaseLen  = 1 + 8 + 2
 )
+
+const (
+	AeadNonceSize = 12
+	AeadTagSize   = 16
+)
+
+const TcpChunkLengthLen = 2
