@@ -2,8 +2,8 @@ package shadowsocks
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
+	"math/big"
 )
 
 // FillRandomBytes fills dst with cryptographically secure random bytes.
@@ -30,21 +30,9 @@ func RandomInt(min, max int) (int, error) {
 		return min, nil
 	}
 
-	span := uint64(max - min + 1)
-	if span == 0 {
-		return 0, fmt.Errorf("invalid random range")
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	if err != nil {
+		return 0, err
 	}
-
-	var buf [8]byte
-	limit := ^uint64(0) - (^uint64(0) % span)
-
-	for {
-		if err := FillRandomBytes(buf[:]); err != nil {
-			return 0, err
-		}
-		v := binary.BigEndian.Uint64(buf[:])
-		if v < limit {
-			return min + int(v%span), nil
-		}
-	}
+	return min + int(n.Int64()), nil
 }
