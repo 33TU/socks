@@ -92,6 +92,16 @@ func NewDialerFromURL(u *url.URL, dialer socksnet.Dialer) (*Dialer, error) {
 	return NewDialer(proxyAddr, auth, dialer), nil
 }
 
+// NewDialerFromURLString creates a new Dialer from a URL string of the form
+// socks5://[user:pass@]host:port or socks5h://[user:pass@]host:port.
+func NewDialerFromURLString(rawURL string, dialer socksnet.Dialer) (*Dialer, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	return NewDialerFromURL(u, dialer)
+}
+
 // ProxyAddress returns the configured SOCKS5 proxy address.
 func (d *Dialer) ProxyAddress() string {
 	return d.ProxyAddr
