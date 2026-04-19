@@ -129,10 +129,8 @@ func (s *TCPStreamCipher) EncodeChunkLengthTo(dst []byte, payloadLen uint16) ([]
 }
 
 // DecodeChunkLength decrypts and parses a 2-byte big-endian payload length.
-func (s *TCPStreamCipher) DecodeChunkLength(src []byte) (uint16, error) {
-	var buf [TcpChunkLengthLen]byte
-
-	plain, err := s.OpenTo(buf[:0], src)
+func (s *TCPStreamCipher) DecodeChunkLength(src []byte, scratch []byte) (uint16, error) {
+	plain, err := s.OpenTo(scratch[:0], src)
 	if err != nil {
 		return 0, err
 	}
@@ -157,26 +155,32 @@ func (s *TCPStreamCipher) DecodeChunkPayloadTo(dst, src []byte) ([]byte, error) 
 }
 
 // EncodeRequestFixedHeaderTo encodes and encrypts a TCP request fixed header into dst.
-func (s *TCPStreamCipher) EncodeRequestFixedHeaderTo(dst []byte, h *TCPRequestFixedHeader) ([]byte, error) {
+// scratch is used as the plaintext scratch buffer and may be nil.
+func (s *TCPStreamCipher) EncodeRequestFixedHeaderTo(dst []byte, h *TCPRequestFixedHeader, scratch []byte) ([]byte, error) {
 	if h == nil {
 		return nil, fmt.Errorf("nil TCP request fixed header")
 	}
 
-	buf := make([]byte, h.EncodedLen())
-	n, err := h.EncodeTo(buf)
+	plain := scratch[:0]
+	if cap(plain) >= h.EncodedLen() {
+		plain = plain[:h.EncodedLen()]
+	} else {
+		plain = make([]byte, h.EncodedLen())
+	}
+
+	n, err := h.EncodeTo(plain)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.SealTo(dst, buf[:n])
+	return s.SealTo(dst, plain[:n])
 }
 
 // DecodeRequestFixedHeader decrypts and decodes a TCP request fixed header from src.
-func (s *TCPStreamCipher) DecodeRequestFixedHeader(src []byte) (TCPRequestFixedHeader, error) {
+func (s *TCPStreamCipher) DecodeRequestFixedHeader(src []byte, scratch []byte) (TCPRequestFixedHeader, error) {
 	var h TCPRequestFixedHeader
-	buf := make([]byte, h.EncodedLen())
 
-	plain, err := s.OpenTo(buf[:0], src)
+	plain, err := s.OpenTo(scratch[:0], src)
 	if err != nil {
 		return TCPRequestFixedHeader{}, err
 	}
@@ -188,18 +192,25 @@ func (s *TCPStreamCipher) DecodeRequestFixedHeader(src []byte) (TCPRequestFixedH
 }
 
 // EncodeRequestVariableHeaderTo encodes and encrypts a TCP request variable header into dst.
-func (s *TCPStreamCipher) EncodeRequestVariableHeaderTo(dst []byte, h *TCPRequestVariableHeader) ([]byte, error) {
+// scratch is used as the plaintext scratch buffer and may be nil.
+func (s *TCPStreamCipher) EncodeRequestVariableHeaderTo(dst []byte, h *TCPRequestVariableHeader, scratch []byte) ([]byte, error) {
 	if h == nil {
 		return nil, fmt.Errorf("nil TCP request variable header")
 	}
 
-	buf := make([]byte, h.EncodedLen())
-	n, err := h.EncodeTo(buf)
+	plain := scratch[:0]
+	if cap(plain) >= h.EncodedLen() {
+		plain = plain[:h.EncodedLen()]
+	} else {
+		plain = make([]byte, h.EncodedLen())
+	}
+
+	n, err := h.EncodeTo(plain)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.SealTo(dst, buf[:n])
+	return s.SealTo(dst, plain[:n])
 }
 
 // DecodeRequestVariableHeader decrypts and decodes a TCP request variable header from src.
@@ -218,18 +229,25 @@ func (s *TCPStreamCipher) DecodeRequestVariableHeader(src []byte, scratch []byte
 }
 
 // EncodeResponseHeaderTo encodes and encrypts a TCP response header into dst.
-func (s *TCPStreamCipher) EncodeResponseHeaderTo(dst []byte, h *TCPResponseHeader) ([]byte, error) {
+// scratch is used as the plaintext scratch buffer and may be nil.
+func (s *TCPStreamCipher) EncodeResponseHeaderTo(dst []byte, h *TCPResponseHeader, scratch []byte) ([]byte, error) {
 	if h == nil {
 		return nil, fmt.Errorf("nil TCP response header")
 	}
 
-	buf := make([]byte, h.EncodedLen())
-	n, err := h.EncodeTo(buf)
+	plain := scratch[:0]
+	if cap(plain) >= h.EncodedLen() {
+		plain = plain[:h.EncodedLen()]
+	} else {
+		plain = make([]byte, h.EncodedLen())
+	}
+
+	n, err := h.EncodeTo(plain)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.SealTo(dst, buf[:n])
+	return s.SealTo(dst, plain[:n])
 }
 
 // DecodeResponseHeader decrypts and decodes a TCP response header from src.

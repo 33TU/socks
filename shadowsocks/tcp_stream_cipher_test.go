@@ -303,7 +303,7 @@ func TestTCPStreamCipher_ChunkLength_RoundTrip(t *testing.T) {
 		t.Fatalf("len(ciphertext) = %d, want %d", got, want)
 	}
 
-	n, err := dec.DecodeChunkLength(ciphertext)
+	n, err := dec.DecodeChunkLength(ciphertext, nil)
 	if err != nil {
 		t.Fatalf("DecodeChunkLength() error = %v", err)
 	}
@@ -359,12 +359,12 @@ func TestTCPStreamCipher_RequestFixedHeader_RoundTrip(t *testing.T) {
 	var want shadowsocks.TCPRequestFixedHeader
 	want.Init(shadowsocks.TCPHeaderTypeClientStream, 123456789, 321)
 
-	ciphertext, err := enc.EncodeRequestFixedHeaderTo(nil, &want)
+	ciphertext, err := enc.EncodeRequestFixedHeaderTo(nil, &want, nil)
 	if err != nil {
 		t.Fatalf("EncodeRequestFixedHeaderTo() error = %v", err)
 	}
 
-	got, err := dec.DecodeRequestFixedHeader(ciphertext)
+	got, err := dec.DecodeRequestFixedHeader(ciphertext, nil)
 	if err != nil {
 		t.Fatalf("DecodeRequestFixedHeader() error = %v", err)
 	}
@@ -379,7 +379,7 @@ func TestTCPStreamCipher_RequestFixedHeader_Nil(t *testing.T) {
 
 	enc, _, _ := newTestCipherPair(t)
 
-	_, err := enc.EncodeRequestFixedHeaderTo(nil, nil)
+	_, err := enc.EncodeRequestFixedHeaderTo(nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -404,7 +404,7 @@ func TestTCPStreamCipher_RequestVariableHeader_RoundTrip(t *testing.T) {
 		[]byte("hello"),
 	)
 
-	ciphertext, err := enc.EncodeRequestVariableHeaderTo(nil, &want)
+	ciphertext, err := enc.EncodeRequestVariableHeaderTo(nil, &want, nil)
 	if err != nil {
 		t.Fatalf("EncodeRequestVariableHeaderTo() error = %v", err)
 	}
@@ -439,7 +439,7 @@ func TestTCPStreamCipher_RequestVariableHeader_Nil(t *testing.T) {
 
 	enc, _, _ := newTestCipherPair(t)
 
-	_, err := enc.EncodeRequestVariableHeaderTo(nil, nil)
+	_, err := enc.EncodeRequestVariableHeaderTo(nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -456,7 +456,7 @@ func TestTCPStreamCipher_ResponseHeader_RoundTrip(t *testing.T) {
 	var want shadowsocks.TCPResponseHeader
 	want.Init(shadowsocks.TCPHeaderTypeServerStream, 123456789, []byte{1, 2, 3, 4}, 4)
 
-	ciphertext, err := enc.EncodeResponseHeaderTo(nil, &want)
+	ciphertext, err := enc.EncodeResponseHeaderTo(nil, &want, nil)
 	if err != nil {
 		t.Fatalf("EncodeResponseHeaderTo() error = %v", err)
 	}
@@ -479,7 +479,7 @@ func TestTCPStreamCipher_ResponseHeader_Nil(t *testing.T) {
 
 	enc, _, _ := newTestCipherPair(t)
 
-	_, err := enc.EncodeResponseHeaderTo(nil, nil)
+	_, err := enc.EncodeResponseHeaderTo(nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
