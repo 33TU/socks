@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -27,6 +28,31 @@ func NewDialer(proxyAddr, userID string, dialer socksnet.Dialer) *Dialer {
 		UserID:    userID,
 		Dialer:    dialer,
 	}
+}
+
+// NewDialerFromURL creates a new Dialer from a URL of the form
+// socks4://[user@]host:port or socks4a://[user@]host:port.
+func NewDialerFromURL(u *url.URL, dialer socksnet.Dialer) (*Dialer, error) {
+	switch u.Scheme {
+	case "socks4", "socks4a":
+	default:
+		return nil, fmt.Errorf("invalid scheme: %s", u.Scheme)
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("missing host in proxy URL")
+	}
+
+	port := u.Port()
+	if port == "" {
+		return nil, fmt.Errorf("missing port in proxy URL")
+	}
+
+	proxyAddr := net.JoinHostPort(host, port)
+	userID := u.User.Username()
+
+	return NewDialer(proxyAddr, userID, dialer), nil
 }
 
 // ProxyAddress returns the configured SOCKS4 proxy address.
