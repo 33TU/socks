@@ -164,6 +164,7 @@ type TCPServerResponseStart struct {
 	ResponseSalt   []byte
 	ResponseCipher *TCPStreamCipher
 	Header         TCPResponseHeader
+	InitialPayload []byte
 }
 
 // Init initializes the server response-start state from method, PSK, and response salt.
@@ -217,17 +218,21 @@ func (s *TCPServerResponseStart) Validate(requestSalt []byte) error {
 	if !bytes.Equal(s.Header.RequestSalt, requestSalt) {
 		return fmt.Errorf("response request salt mismatch")
 	}
+	if int(s.Header.Length) != len(s.InitialPayload) {
+		return fmt.Errorf("invalid initial payload length: got %d, want %d", len(s.InitialPayload), s.Header.Length)
+	}
 
 	return nil
 }
 
 // WriteResponseStart writes the full server response startup:
 //
-//	response salt || encrypted response header
+//	response salt || encrypted response header || encrypted first response payload
 func (s *TCPServerResponseStart) WriteResponseStart(
 	dst io.Writer,
 	timestamp time.Time,
 	requestSalt []byte,
+	initialPayload []byte,
 ) (int64, error) {
 	if s == nil {
 		return 0, fmt.Errorf("nil TCP server response start")
@@ -253,15 +258,16 @@ func (s *TCPServerResponseStart) WriteResponseStart(
 		TCPHeaderTypeServerStream,
 		uint64(timestamp.Unix()),
 		requestSalt,
-		uint16(len(requestSalt)),
+		uint16(len(initialPayload)),
 	)
 	if err := header.Validate(); err != nil {
 		return 0, err
 	}
 	s.Header = header
+	s.InitialPayload = append(s.InitialPayload[:0], initialPayload...)
 
-	plainScratch := ibuf.GetBytes(s.Header.EncodedLen())
-	defer ibuf.PutBytes(plainScratch)
+	headerPlainScratch := ibuf.GetBytes(s.Header.EncodedLen())
+	defer ibuf.PutBytes(headerPlainScratch)
 
 	var stackBuf [tcpServerResponseStartStackBufSize]byte
 	out := stackBuf[:0]
@@ -269,7 +275,12 @@ func (s *TCPServerResponseStart) WriteResponseStart(
 	out = append(out, s.ResponseSalt...)
 
 	var err error
-	out, err = s.ResponseCipher.EncodeResponseHeaderTo(out, &s.Header, plainScratch[:0])
+	out, err = s.ResponseCipher.EncodeResponseHeaderTo(out, &s.Header, headerPlainScratch[:0])
+	if err != nil {
+		return 0, err
+	}
+
+	out, err = s.ResponseCipher.EncodeChunkPayloadTo(out, s.InitialPayload)
 	if err != nil {
 		return 0, err
 	}

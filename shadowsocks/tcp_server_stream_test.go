@@ -297,12 +297,14 @@ func TestTCPServerResponseStart_Init_Validate(t *testing.T) {
 		t.Fatalf("NewTCPStreamCipherFromPSK() error = %v", err)
 	}
 
+	initialPayload := []byte("pong")
+
 	var hdr shadowsocks.TCPResponseHeader
 	hdr.Init(
 		shadowsocks.TCPHeaderTypeServerStream,
 		1700000000,
 		requestSalt,
-		uint16(len(requestSalt)),
+		uint16(len(initialPayload)),
 	)
 
 	t.Run("valid", func(t *testing.T) {
@@ -313,6 +315,7 @@ func TestTCPServerResponseStart_Init_Validate(t *testing.T) {
 			t.Fatalf("Init() error = %v", err)
 		}
 		s.Header = hdr
+		s.InitialPayload = append([]byte(nil), initialPayload...)
 
 		if err := s.Validate(requestSalt); err != nil {
 			t.Fatalf("Validate() error = %v", err)
@@ -362,10 +365,11 @@ func TestTCPServerResponseStart_Init_Validate(t *testing.T) {
 		t.Parallel()
 
 		s := &shadowsocks.TCPServerResponseStart{
-			Method:       method,
-			PSK:          psk,
-			ResponseSalt: responseSalt,
-			Header:       hdr,
+			Method:         method,
+			PSK:            psk,
+			ResponseSalt:   responseSalt,
+			Header:         hdr,
+			InitialPayload: append([]byte(nil), initialPayload...),
 		}
 
 		err := s.Validate(requestSalt)
@@ -386,6 +390,7 @@ func TestTCPServerResponseStart_Init_Validate(t *testing.T) {
 			ResponseSalt:   responseSalt,
 			ResponseCipher: responseCipher,
 			Header:         hdr,
+			InitialPayload: append([]byte(nil), initialPayload...),
 		}
 
 		badRequestSalt := append([]byte(nil), requestSalt...)
@@ -396,6 +401,27 @@ func TestTCPServerResponseStart_Init_Validate(t *testing.T) {
 			t.Fatal("expected error, got nil")
 		}
 		if !strings.Contains(err.Error(), "response request salt mismatch") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("initial payload length mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		s := &shadowsocks.TCPServerResponseStart{
+			Method:         method,
+			PSK:            psk,
+			ResponseSalt:   responseSalt,
+			ResponseCipher: responseCipher,
+			Header:         hdr,
+			InitialPayload: nil,
+		}
+
+		err := s.Validate(requestSalt)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid initial payload length") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -417,14 +443,19 @@ func TestTCPServerResponseStart_WriteResponseStart(t *testing.T) {
 	}
 
 	ts := time.Unix(1700000100, 0)
+	initialPayload := []byte("pong")
 
 	var buf bytes.Buffer
-	n, err := s.WriteResponseStart(&buf, ts, requestSalt)
+	n, err := s.WriteResponseStart(&buf, ts, requestSalt, initialPayload)
 	if err != nil {
 		t.Fatalf("WriteResponseStart() error = %v", err)
 	}
 
-	wantLen := len(responseSalt) + (shadowsocks.TcpResponseFixedBaseLen + method.SaltSize + method.TagSize)
+	headerPlainLen := 1 + 8 + len(requestSalt) + 2
+	wantLen := len(responseSalt) +
+		(headerPlainLen + method.TagSize) +
+		(len(initialPayload) + method.TagSize)
+
 	if int(n) != wantLen {
 		t.Fatalf("WriteResponseStart() wrote %d bytes, want %d", n, wantLen)
 	}
@@ -446,6 +477,12 @@ func TestTCPServerResponseStart_WriteResponseStart(t *testing.T) {
 	if !bytes.Equal(s.Header.RequestSalt, requestSalt) {
 		t.Fatalf("Header.RequestSalt = %v, want %v", s.Header.RequestSalt, requestSalt)
 	}
+	if s.Header.Length != uint16(len(initialPayload)) {
+		t.Fatalf("Header.Length = %d, want %d", s.Header.Length, len(initialPayload))
+	}
+	if !bytes.Equal(s.InitialPayload, initialPayload) {
+		t.Fatalf("InitialPayload = %q, want %q", s.InitialPayload, initialPayload)
+	}
 }
 
 func TestTCPServerResponseStart_WriteResponseStart_InvalidRequestSalt(t *testing.T) {
@@ -460,7 +497,7 @@ func TestTCPServerResponseStart_WriteResponseStart_InvalidRequestSalt(t *testing
 	}
 
 	var buf bytes.Buffer
-	_, err := s.WriteResponseStart(&buf, time.Unix(1700000100, 0), responseSalt[:len(responseSalt)-1])
+	_, err := s.WriteResponseStart(&buf, time.Unix(1700000100, 0), responseSalt[:len(responseSalt)-1], nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -478,7 +515,7 @@ func TestTCPServerResponseStart_WriteResponseStart_NilReceiver(t *testing.T) {
 	var s *shadowsocks.TCPServerResponseStart
 	var buf bytes.Buffer
 
-	_, err := s.WriteResponseStart(&buf, time.Unix(1700000100, 0), requestSalt)
+	_, err := s.WriteResponseStart(&buf, time.Unix(1700000100, 0), requestSalt, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

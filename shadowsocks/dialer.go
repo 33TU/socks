@@ -3,7 +3,6 @@ package shadowsocks
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/url"
 	"time"
@@ -166,7 +165,6 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 		return nil, err
 	}
 
-	log.Println("writing request start")
 	if _, err := reqStart.WriteRequestStart(conn, time.Now(), target, []byte{0}, nil); err != nil {
 		conn.Close()
 		return nil, err

@@ -227,8 +227,14 @@ func TestTCPClientResponseStart_Validate(t *testing.T) {
 		t.Fatalf("NewTCPStreamCipherFromPSK() error = %v", err)
 	}
 
+	initialPayload := []byte("hello")
 	var hdr shadowsocks.TCPResponseHeader
-	hdr.Init(shadowsocks.TCPHeaderTypeServerStream, 1700000000, requestSalt, uint16(len(requestSalt)))
+	hdr.Init(
+		shadowsocks.TCPHeaderTypeServerStream,
+		1700000000,
+		requestSalt,
+		uint16(len(initialPayload)),
+	)
 
 	t.Run("valid", func(t *testing.T) {
 		t.Parallel()
@@ -237,6 +243,7 @@ func TestTCPClientResponseStart_Validate(t *testing.T) {
 			ResponseSalt:   append([]byte(nil), responseSalt...),
 			ResponseCipher: responseCipher,
 			Header:         hdr,
+			InitialPayload: append([]byte(nil), initialPayload...),
 		}
 
 		if err := s.Validate(method, requestSalt); err != nil {
@@ -264,6 +271,7 @@ func TestTCPClientResponseStart_Validate(t *testing.T) {
 			ResponseSalt:   responseSalt[:len(responseSalt)-1],
 			ResponseCipher: responseCipher,
 			Header:         hdr,
+			InitialPayload: append([]byte(nil), initialPayload...),
 		}
 
 		err := s.Validate(method, requestSalt)
@@ -279,8 +287,9 @@ func TestTCPClientResponseStart_Validate(t *testing.T) {
 		t.Parallel()
 
 		s := &shadowsocks.TCPClientResponseStart{
-			ResponseSalt: responseSalt,
-			Header:       hdr,
+			ResponseSalt:   responseSalt,
+			Header:         hdr,
+			InitialPayload: append([]byte(nil), initialPayload...),
 		}
 
 		err := s.Validate(method, requestSalt)
@@ -302,6 +311,7 @@ func TestTCPClientResponseStart_Validate(t *testing.T) {
 			ResponseSalt:   responseSalt,
 			ResponseCipher: responseCipher,
 			Header:         hdr,
+			InitialPayload: append([]byte(nil), initialPayload...),
 		}
 
 		err := s.Validate(method, badRequestSalt)
@@ -309,6 +319,25 @@ func TestTCPClientResponseStart_Validate(t *testing.T) {
 			t.Fatal("expected error, got nil")
 		}
 		if !strings.Contains(err.Error(), "response request salt mismatch") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("initial payload length mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		s := &shadowsocks.TCPClientResponseStart{
+			ResponseSalt:   responseSalt,
+			ResponseCipher: responseCipher,
+			Header:         hdr,
+			InitialPayload: nil,
+		}
+
+		err := s.Validate(method, requestSalt)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid initial payload length") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -335,12 +364,14 @@ func TestTCPClientRequestStart_ReadResponseStart(t *testing.T) {
 		t.Fatalf("NewTCPStreamCipherFromPSK() error = %v", err)
 	}
 
+	initialPayload := []byte("hello")
+
 	var hdr shadowsocks.TCPResponseHeader
 	hdr.Init(
 		shadowsocks.TCPHeaderTypeServerStream,
 		uint64(time.Unix(1700000100, 0).Unix()),
 		requestSalt,
-		uint16(len(requestSalt)),
+		uint16(len(initialPayload)),
 	)
 
 	encHeader, err := responseCipher.EncodeResponseHeaderTo(nil, &hdr, nil)
@@ -348,16 +379,22 @@ func TestTCPClientRequestStart_ReadResponseStart(t *testing.T) {
 		t.Fatalf("EncodeResponseHeaderTo() error = %v", err)
 	}
 
+	encPayload, err := responseCipher.EncodeChunkPayloadTo(nil, initialPayload)
+	if err != nil {
+		t.Fatalf("EncodeChunkPayloadTo() error = %v", err)
+	}
+
 	var wire bytes.Buffer
 	wire.Write(responseSalt)
 	wire.Write(encHeader)
+	wire.Write(encPayload)
 
 	resp, n, err := clientStart.ReadResponseStart(&wire)
 	if err != nil {
 		t.Fatalf("ReadResponseStart() error = %v", err)
 	}
 
-	wantN := int64(len(responseSalt) + len(encHeader))
+	wantN := int64(len(responseSalt) + len(encHeader) + len(encPayload))
 	if n != wantN {
 		t.Fatalf("ReadResponseStart() read %d bytes, want %d", n, wantN)
 	}
@@ -373,6 +410,9 @@ func TestTCPClientRequestStart_ReadResponseStart(t *testing.T) {
 	}
 	if !bytes.Equal(resp.Header.RequestSalt, requestSalt) {
 		t.Fatalf("Header.RequestSalt = %v, want %v", resp.Header.RequestSalt, requestSalt)
+	}
+	if !bytes.Equal(resp.InitialPayload, initialPayload) {
+		t.Fatalf("InitialPayload = %q, want %q", resp.InitialPayload, initialPayload)
 	}
 }
 
@@ -425,12 +465,14 @@ func TestTCPClientRequestStart_ReadResponseStart_RequestSaltMismatch(t *testing.
 	badRequestSalt := append([]byte(nil), requestSalt...)
 	badRequestSalt[0] ^= 0xff
 
+	initialPayload := []byte("hello")
+
 	var hdr shadowsocks.TCPResponseHeader
 	hdr.Init(
 		shadowsocks.TCPHeaderTypeServerStream,
 		uint64(time.Unix(1700000100, 0).Unix()),
 		badRequestSalt,
-		uint16(len(badRequestSalt)),
+		uint16(len(initialPayload)),
 	)
 
 	encHeader, err := responseCipher.EncodeResponseHeaderTo(nil, &hdr, nil)
@@ -438,9 +480,15 @@ func TestTCPClientRequestStart_ReadResponseStart_RequestSaltMismatch(t *testing.
 		t.Fatalf("EncodeResponseHeaderTo() error = %v", err)
 	}
 
+	encPayload, err := responseCipher.EncodeChunkPayloadTo(nil, initialPayload)
+	if err != nil {
+		t.Fatalf("EncodeChunkPayloadTo() error = %v", err)
+	}
+
 	var wire bytes.Buffer
 	wire.Write(responseSalt)
 	wire.Write(encHeader)
+	wire.Write(encPayload)
 
 	_, _, err = clientStart.ReadResponseStart(&wire)
 	if err == nil {

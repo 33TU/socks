@@ -395,20 +395,9 @@ func TestDialer_DialContext_Success(t *testing.T) {
 			return
 		}
 
-		if _, err := respStart.WriteResponseStart(c, time.Now(), reqStart.RequestSalt); err != nil {
-			t.Errorf("server: WriteResponseStart() error = %v", err)
-			return
-		}
-
 		var reader shadowsocks.TCPChunkReader
 		if err := reader.Init(reqStart.RequestCipher); err != nil {
 			t.Errorf("server: reader Init() error = %v", err)
-			return
-		}
-
-		var writer shadowsocks.TCPChunkWriter
-		if err := writer.Init(respStart.ResponseCipher); err != nil {
-			t.Errorf("server: writer Init() error = %v", err)
 			return
 		}
 
@@ -422,8 +411,35 @@ func TestDialer_DialContext_Success(t *testing.T) {
 			return
 		}
 
-		if _, err := writer.WriteChunk(c, []byte("pong")); err != nil {
-			t.Errorf("server: WriteChunk() error = %v", err)
+		initialPayload := []byte("pong")
+
+		var hdr shadowsocks.TCPResponseHeader
+		hdr.Init(
+			shadowsocks.TCPHeaderTypeServerStream,
+			uint64(time.Now().Unix()),
+			reqStart.RequestSalt,
+			uint16(len(initialPayload)),
+		)
+
+		encHeader, err := respStart.ResponseCipher.EncodeResponseHeaderTo(nil, &hdr, nil)
+		if err != nil {
+			t.Errorf("server: EncodeResponseHeaderTo() error = %v", err)
+			return
+		}
+
+		encPayload, err := respStart.ResponseCipher.EncodeChunkPayloadTo(nil, initialPayload)
+		if err != nil {
+			t.Errorf("server: EncodeChunkPayloadTo() error = %v", err)
+			return
+		}
+
+		var wire bytes.Buffer
+		wire.Write(respStart.ResponseSalt)
+		wire.Write(encHeader)
+		wire.Write(encPayload)
+
+		if _, err := c.Write(wire.Bytes()); err != nil {
+			t.Errorf("server: response start write error = %v", err)
 			return
 		}
 	})
@@ -479,7 +495,7 @@ func TestDialer_DialContext_Deadline(t *testing.T) {
 		if err := respStart.Init(method, psk, responseSalt); err != nil {
 			return
 		}
-		if _, err := respStart.WriteResponseStart(c, time.Now(), reqStart.RequestSalt); err != nil {
+		if _, err := respStart.WriteResponseStart(c, time.Now(), reqStart.RequestSalt, nil); err != nil {
 			return
 		}
 
