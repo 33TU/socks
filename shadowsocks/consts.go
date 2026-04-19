@@ -1,5 +1,7 @@
 package shadowsocks
 
+import "errors"
+
 // Encryption method constants for Shadowsocks AEAD-2022.
 const (
 	Method2022Blake3AES128GCM        = "2022-blake3-aes-128-gcm"
@@ -31,3 +33,13 @@ const (
 )
 
 const TcpChunkLengthLen = 2
+
+// Common validation and decode errors for Shadowsocks TCP headers.
+var (
+	ErrInvalidTCPHeaderType      = errors.New("invalid TCP header type")          // res and req
+	ErrInvalidTCPPaddingLength   = errors.New("invalid TCP padding length")       // req
+	ErrMissingTCPHeaderData      = errors.New("missing TCP header data")          // req
+	ErrShortTCPHeader            = errors.New("short TCP header")                 // res and req
+	ErrMissingTCPResponseSalt    = errors.New("missing TCP response salt")        // res
+	ErrInvalidTCPResponseSaltLen = errors.New("invalid TCP response salt length") // res
+)

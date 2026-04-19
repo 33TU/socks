@@ -367,10 +367,9 @@ func TestDialer_DialContext_Success(t *testing.T) {
 	proxyAddr, stop := startMockShadowsocksServer(t, func(c net.Conn) {
 		defer c.Close()
 
-		var reqStart shadowsocks.TCPServerRequestStart
-		_, err := reqStart.ReadRequestStart(c, method, psk)
+		reqStart, _, err := shadowsocks.ReadTCPRequestStart(c, method, psk)
 		if err != nil {
-			t.Errorf("server: ReadRequestStart() error = %v", err)
+			t.Errorf("server: ReadTCPRequestStart() error = %v", err)
 			return
 		}
 
@@ -387,23 +386,15 @@ func TestDialer_DialContext_Success(t *testing.T) {
 			return
 		}
 
-		responseSalt := bytes.Repeat([]byte{0x33}, method.SaltSize)
-
-		var respStart shadowsocks.TCPServerResponseStart
-		if err := respStart.Init(method, psk, responseSalt); err != nil {
-			t.Errorf("server: response Init() error = %v", err)
-			return
-		}
-
 		var reader shadowsocks.TCPChunkReader
-		if err := reader.Init(reqStart.RequestCipher); err != nil {
+		if err := reader.Init(reqStart.Cipher); err != nil {
 			t.Errorf("server: reader Init() error = %v", err)
 			return
 		}
 
 		payload, _, err := reader.ReadChunkTo(nil, c)
 		if err != nil {
-			t.Errorf("server: ReadChunk() error = %v", err)
+			t.Errorf("server: ReadChunkTo() error = %v", err)
 			return
 		}
 		if string(payload) != "ping" {
@@ -411,35 +402,20 @@ func TestDialer_DialContext_Success(t *testing.T) {
 			return
 		}
 
+		responseSalt := bytes.Repeat([]byte{0x33}, method.SaltSize)
 		initialPayload := []byte("pong")
 
-		var hdr shadowsocks.TCPResponseHeader
-		hdr.Init(
-			shadowsocks.TCPHeaderTypeServerStream,
-			uint64(time.Now().Unix()),
-			reqStart.RequestSalt,
-			uint16(len(initialPayload)),
+		_, _, err = shadowsocks.WriteTCPResponseStart(
+			c,
+			method,
+			psk,
+			responseSalt,
+			time.Now(),
+			reqStart.Salt,
+			initialPayload,
 		)
-
-		encHeader, err := respStart.ResponseCipher.EncodeResponseHeaderTo(nil, &hdr, nil)
 		if err != nil {
-			t.Errorf("server: EncodeResponseHeaderTo() error = %v", err)
-			return
-		}
-
-		encPayload, err := respStart.ResponseCipher.EncodeChunkPayloadTo(nil, initialPayload)
-		if err != nil {
-			t.Errorf("server: EncodeChunkPayloadTo() error = %v", err)
-			return
-		}
-
-		var wire bytes.Buffer
-		wire.Write(respStart.ResponseSalt)
-		wire.Write(encHeader)
-		wire.Write(encPayload)
-
-		if _, err := c.Write(wire.Bytes()); err != nil {
-			t.Errorf("server: response start write error = %v", err)
+			t.Errorf("server: WriteTCPResponseStart() error = %v", err)
 			return
 		}
 	})
@@ -484,18 +460,23 @@ func TestDialer_DialContext_Deadline(t *testing.T) {
 	proxyAddr, stop := startMockShadowsocksServer(t, func(c net.Conn) {
 		defer c.Close()
 
-		var reqStart shadowsocks.TCPServerRequestStart
-		if _, err := reqStart.ReadRequestStart(c, method, psk); err != nil {
+		reqStart, _, err := shadowsocks.ReadTCPRequestStart(c, method, psk)
+		if err != nil {
 			return
 		}
 
 		responseSalt := bytes.Repeat([]byte{0x33}, method.SaltSize)
 
-		var respStart shadowsocks.TCPServerResponseStart
-		if err := respStart.Init(method, psk, responseSalt); err != nil {
-			return
-		}
-		if _, err := respStart.WriteResponseStart(c, time.Now(), reqStart.RequestSalt, nil); err != nil {
+		_, _, err = shadowsocks.WriteTCPResponseStart(
+			c,
+			method,
+			psk,
+			responseSalt,
+			time.Now(),
+			reqStart.Salt,
+			nil,
+		)
+		if err != nil {
 			return
 		}
 
