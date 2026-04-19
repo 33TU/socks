@@ -5,25 +5,34 @@ import (
 	"io"
 )
 
-// TCPChunkReader reads encrypted Shadowsocks 2022 TCP chunks.
+// TCPChunkReader reads encrypted Shadowsocks 2022 TCP chunks and exposes a
+// stream-style io.Reader view over the decrypted payload.
 type TCPChunkReader struct {
 	Cipher *TCPStreamCipher
+	Src    io.Reader
 
 	encLenBuf     []byte
 	encPayloadBuf []byte
 	lenScratch    [TcpChunkLengthLen]byte
+
+	chunkBuf []byte
+	readBuf  []byte
 }
 
-// Init initializes the chunk reader for a TCP stream cipher.
-func (r *TCPChunkReader) Init(c *TCPStreamCipher) error {
+// Init initializes the chunk reader for a TCP stream cipher and source.
+func (r *TCPChunkReader) Init(c *TCPStreamCipher, src io.Reader) error {
 	if c == nil {
 		return fmt.Errorf("nil TCP stream cipher")
+	}
+	if src == nil {
+		return fmt.Errorf("nil TCP chunk source")
 	}
 	if err := c.Validate(); err != nil {
 		return err
 	}
 
 	r.Cipher = c
+	r.Src = src
 
 	encLenSize := c.EncryptedChunkLength()
 	if cap(r.encLenBuf) < encLenSize {
@@ -33,6 +42,9 @@ func (r *TCPChunkReader) Init(c *TCPStreamCipher) error {
 	}
 
 	r.encPayloadBuf = r.encPayloadBuf[:0]
+	r.chunkBuf = r.chunkBuf[:0]
+	r.readBuf = r.readBuf[:0]
+
 	return nil
 }
 
@@ -44,20 +56,23 @@ func (r *TCPChunkReader) Validate() error {
 	if r.Cipher == nil {
 		return fmt.Errorf("missing TCP stream cipher")
 	}
+	if r.Src == nil {
+		return fmt.Errorf("missing TCP chunk source")
+	}
 	return r.Cipher.Validate()
 }
 
-// ReadChunkTo reads a full encrypted TCP chunk from src, decrypts it, and
-// appends the plaintext payload into dst. It returns the resulting slice and
-// total bytes read.
-func (r *TCPChunkReader) ReadChunkTo(dst []byte, src io.Reader) ([]byte, int64, error) {
+// ReadChunkTo reads one full encrypted TCP chunk from the underlying source,
+// decrypts it, and appends the plaintext payload into dst. It returns the
+// resulting slice and total bytes read from the underlying source.
+func (r *TCPChunkReader) ReadChunkTo(dst []byte) ([]byte, int64, error) {
 	if err := r.Validate(); err != nil {
 		return nil, 0, err
 	}
 
 	var total int64
 
-	n, err := io.ReadFull(src, r.encLenBuf)
+	n, err := io.ReadFull(r.Src, r.encLenBuf)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
@@ -75,7 +90,7 @@ func (r *TCPChunkReader) ReadChunkTo(dst []byte, src io.Reader) ([]byte, int64, 
 		r.encPayloadBuf = r.encPayloadBuf[:encPayloadLen]
 	}
 
-	n, err = io.ReadFull(src, r.encPayloadBuf)
+	n, err = io.ReadFull(r.Src, r.encPayloadBuf)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
@@ -89,22 +104,53 @@ func (r *TCPChunkReader) ReadChunkTo(dst []byte, src io.Reader) ([]byte, int64, 
 	return dst, total, nil
 }
 
-// TCPChunkWriter writes encrypted Shadowsocks 2022 TCP chunks.
+// Read implements io.Reader over the decrypted TCP stream.
+func (r *TCPChunkReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if err := r.Validate(); err != nil {
+		return 0, err
+	}
+
+	if len(r.readBuf) == 0 {
+		buf, _, err := r.ReadChunkTo(r.chunkBuf[:0])
+		if err != nil {
+			return 0, err
+		}
+		r.chunkBuf = buf
+		r.readBuf = buf
+	}
+
+	n := copy(p, r.readBuf)
+	r.readBuf = r.readBuf[n:]
+	return n, nil
+}
+
+var _ io.Reader = (*TCPChunkReader)(nil)
+
+// TCPChunkWriter writes encrypted Shadowsocks 2022 TCP chunks and exposes a
+// stream-style io.Writer interface over plaintext payload.
 type TCPChunkWriter struct {
 	Cipher *TCPStreamCipher
+	Dst    io.Writer
 	outBuf []byte
 }
 
-// Init initializes the chunk writer for a TCP stream cipher.
-func (w *TCPChunkWriter) Init(c *TCPStreamCipher) error {
+// Init initializes the chunk writer for a TCP stream cipher and destination.
+func (w *TCPChunkWriter) Init(c *TCPStreamCipher, dst io.Writer) error {
 	if c == nil {
 		return fmt.Errorf("nil TCP stream cipher")
+	}
+	if dst == nil {
+		return fmt.Errorf("nil TCP chunk destination")
 	}
 	if err := c.Validate(); err != nil {
 		return err
 	}
 
 	w.Cipher = c
+	w.Dst = dst
 	w.outBuf = w.outBuf[:0]
 	return nil
 }
@@ -117,12 +163,15 @@ func (w *TCPChunkWriter) Validate() error {
 	if w.Cipher == nil {
 		return fmt.Errorf("missing TCP stream cipher")
 	}
+	if w.Dst == nil {
+		return fmt.Errorf("missing TCP chunk destination")
+	}
 	return w.Cipher.Validate()
 }
 
-// WriteChunk writes a full encrypted TCP chunk to dst and returns the total
-// bytes written.
-func (w *TCPChunkWriter) WriteChunk(dst io.Writer, payload []byte) (int64, error) {
+// WriteChunk writes one full encrypted TCP chunk to the underlying destination
+// and returns the total bytes written to the underlying writer.
+func (w *TCPChunkWriter) WriteChunk(payload []byte) (int64, error) {
 	if err := w.Validate(); err != nil {
 		return 0, err
 	}
@@ -148,6 +197,29 @@ func (w *TCPChunkWriter) WriteChunk(dst io.Writer, payload []byte) (int64, error
 		return 0, err
 	}
 
-	n, err := dst.Write(w.outBuf)
+	n, err := w.Dst.Write(w.outBuf)
 	return int64(n), err
 }
+
+// Write implements io.Writer over the plaintext TCP stream.
+func (w *TCPChunkWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if err := w.Validate(); err != nil {
+		return 0, err
+	}
+
+	written := 0
+	for len(p) > 0 {
+		nn := min(len(p), 0xFFFF)
+		if _, err := w.WriteChunk(p[:nn]); err != nil {
+			return written, err
+		}
+		written += nn
+		p = p[nn:]
+	}
+	return written, nil
+}
+
+var _ io.Writer = (*TCPChunkWriter)(nil)

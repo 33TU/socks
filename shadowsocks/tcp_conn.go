@@ -9,10 +9,8 @@ import (
 type TCPConn struct {
 	net.Conn
 
-	Reader   TCPChunkReader
-	Writer   TCPChunkWriter
-	readBuf  []byte
-	chunkBuf []byte
+	Reader TCPChunkReader
+	Writer TCPChunkWriter
 
 	responseMethod Method
 	responsePSK    []byte
@@ -60,7 +58,7 @@ func NewClientTCPConn(
 	}
 
 	var writer TCPChunkWriter
-	if err := writer.Init(requestCipher); err != nil {
+	if err := writer.Init(requestCipher, conn); err != nil {
 		return nil, err
 	}
 
@@ -90,7 +88,7 @@ func NewServerTCPConn(conn net.Conn, method Method, psk []byte) (*TCPConn, *Pars
 	}
 
 	var reader TCPChunkReader
-	if err := reader.Init(reqStart.Cipher); err != nil {
+	if err := reader.Init(reqStart.Cipher, conn); err != nil {
 		return nil, nil, err
 	}
 
@@ -100,8 +98,8 @@ func NewServerTCPConn(conn net.Conn, method Method, psk []byte) (*TCPConn, *Pars
 	}
 
 	if len(reqStart.Header.InitialData) > 0 {
-		c.chunkBuf = append(c.chunkBuf[:0], reqStart.Header.InitialData...)
-		c.readBuf = c.chunkBuf
+		c.Reader.chunkBuf = append(c.Reader.chunkBuf[:0], reqStart.Header.InitialData...)
+		c.Reader.readBuf = c.Reader.chunkBuf
 	}
 
 	return c, reqStart, nil
@@ -142,7 +140,7 @@ func (c *TCPConn) InitResponse(method Method, psk []byte, requestSalt []byte, in
 		return err
 	}
 
-	return c.Writer.Init(responseCipher)
+	return c.Writer.Init(responseCipher, c.Conn)
 }
 
 func (c *TCPConn) ensureClientResponseReady() error {
@@ -170,13 +168,13 @@ func (c *TCPConn) ensureClientResponseReady() error {
 		return err
 	}
 
-	if err := c.Reader.Init(respStart.Cipher); err != nil {
+	if err := c.Reader.Init(respStart.Cipher, c.Conn); err != nil {
 		return err
 	}
 
 	if len(respStart.InitialPayload) > 0 {
-		c.chunkBuf = append(c.chunkBuf[:0], respStart.InitialPayload...)
-		c.readBuf = c.chunkBuf
+		c.Reader.chunkBuf = append(c.Reader.chunkBuf[:0], respStart.InitialPayload...)
+		c.Reader.readBuf = c.Reader.chunkBuf
 	}
 
 	return nil
@@ -194,22 +192,7 @@ func (c *TCPConn) Read(p []byte) (int, error) {
 			return 0, err
 		}
 	}
-	if c.Reader.Cipher == nil {
-		return 0, fmt.Errorf("TCP reader not initialized")
-	}
-
-	if len(c.readBuf) == 0 {
-		buf, _, err := c.Reader.ReadChunkTo(c.chunkBuf[:0], c.Conn)
-		if err != nil {
-			return 0, err
-		}
-		c.chunkBuf = buf
-		c.readBuf = buf
-	}
-
-	n := copy(p, c.readBuf)
-	c.readBuf = c.readBuf[n:]
-	return n, nil
+	return c.Reader.Read(p)
 }
 
 func (c *TCPConn) Write(p []byte) (int, error) {
@@ -219,20 +202,7 @@ func (c *TCPConn) Write(p []byte) (int, error) {
 	if c == nil {
 		return 0, fmt.Errorf("nil TCPConn")
 	}
-	if c.Writer.Cipher == nil {
-		return 0, fmt.Errorf("TCP writer not initialized")
-	}
-
-	written := 0
-	for len(p) > 0 {
-		nn := min(len(p), 0xFFFF)
-		if _, err := c.Writer.WriteChunk(c.Conn, p[:nn]); err != nil {
-			return written, err
-		}
-		written += nn
-		p = p[nn:]
-	}
-	return written, nil
+	return c.Writer.Write(p)
 }
 
 var _ net.Conn = (*TCPConn)(nil)

@@ -62,7 +62,7 @@ func TestTCPChunkReader_Init_Validate(t *testing.T) {
 		t.Parallel()
 
 		var r shadowsocks.TCPChunkReader
-		if err := r.Init(dec); err != nil {
+		if err := r.Init(dec, bytes.NewReader(nil)); err != nil {
 			t.Fatalf("Init() error = %v", err)
 		}
 		if err := r.Validate(); err != nil {
@@ -74,11 +74,24 @@ func TestTCPChunkReader_Init_Validate(t *testing.T) {
 		t.Parallel()
 
 		var r shadowsocks.TCPChunkReader
-		err := r.Init(nil)
+		err := r.Init(nil, bytes.NewReader(nil))
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		if !strings.Contains(err.Error(), "nil TCP stream cipher") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("nil source", func(t *testing.T) {
+		t.Parallel()
+
+		var r shadowsocks.TCPChunkReader
+		err := r.Init(dec, nil)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "nil TCP chunk source") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -99,12 +112,25 @@ func TestTCPChunkReader_Init_Validate(t *testing.T) {
 	t.Run("missing cipher", func(t *testing.T) {
 		t.Parallel()
 
-		r := &shadowsocks.TCPChunkReader{}
+		r := &shadowsocks.TCPChunkReader{Src: bytes.NewReader(nil)}
 		err := r.Validate()
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		if !strings.Contains(err.Error(), "missing TCP stream cipher") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing source", func(t *testing.T) {
+		t.Parallel()
+
+		r := &shadowsocks.TCPChunkReader{Cipher: dec}
+		err := r.Validate()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "missing TCP chunk source") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -119,7 +145,7 @@ func TestTCPChunkWriter_Init_Validate(t *testing.T) {
 		t.Parallel()
 
 		var w shadowsocks.TCPChunkWriter
-		if err := w.Init(enc); err != nil {
+		if err := w.Init(enc, io.Discard); err != nil {
 			t.Fatalf("Init() error = %v", err)
 		}
 		if err := w.Validate(); err != nil {
@@ -131,11 +157,24 @@ func TestTCPChunkWriter_Init_Validate(t *testing.T) {
 		t.Parallel()
 
 		var w shadowsocks.TCPChunkWriter
-		err := w.Init(nil)
+		err := w.Init(nil, io.Discard)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		if !strings.Contains(err.Error(), "nil TCP stream cipher") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("nil destination", func(t *testing.T) {
+		t.Parallel()
+
+		var w shadowsocks.TCPChunkWriter
+		err := w.Init(enc, nil)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "nil TCP chunk destination") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -156,12 +195,25 @@ func TestTCPChunkWriter_Init_Validate(t *testing.T) {
 	t.Run("missing cipher", func(t *testing.T) {
 		t.Parallel()
 
-		w := &shadowsocks.TCPChunkWriter{}
+		w := &shadowsocks.TCPChunkWriter{Dst: io.Discard}
 		err := w.Validate()
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		if !strings.Contains(err.Error(), "missing TCP stream cipher") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing destination", func(t *testing.T) {
+		t.Parallel()
+
+		w := &shadowsocks.TCPChunkWriter{Cipher: enc}
+		err := w.Validate()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "missing TCP chunk destination") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -172,20 +224,21 @@ func TestTCPChunkWriterReader_RoundTrip(t *testing.T) {
 
 	enc, dec := newTCPChunkCipherPair(t)
 
+	var buf bytes.Buffer
+
 	var w shadowsocks.TCPChunkWriter
-	if err := w.Init(enc); err != nil {
+	if err := w.Init(enc, &buf); err != nil {
 		t.Fatalf("writer Init() error = %v", err)
 	}
 
 	var r shadowsocks.TCPChunkReader
-	if err := r.Init(dec); err != nil {
+	if err := r.Init(dec, &buf); err != nil {
 		t.Fatalf("reader Init() error = %v", err)
 	}
 
 	payload := []byte("hello chunk")
 
-	var buf bytes.Buffer
-	nw, err := w.WriteChunk(&buf, payload)
+	nw, err := w.WriteChunk(payload)
 	if err != nil {
 		t.Fatalf("WriteChunk() error = %v", err)
 	}
@@ -193,15 +246,15 @@ func TestTCPChunkWriterReader_RoundTrip(t *testing.T) {
 		t.Fatalf("WriteChunk() wrote %d bytes, buffer has %d", nw, buf.Len())
 	}
 
-	got, nr, err := r.ReadChunkTo(nil, &buf)
+	got, nr, err := r.ReadChunkTo(nil)
 	if err != nil {
-		t.Fatalf("ReadChunk() error = %v", err)
+		t.Fatalf("ReadChunkTo() error = %v", err)
 	}
 	if nr != nw {
-		t.Fatalf("ReadChunk() read %d bytes, want %d", nr, nw)
+		t.Fatalf("ReadChunkTo() read %d bytes, want %d", nr, nw)
 	}
 	if !bytes.Equal(got, payload) {
-		t.Fatalf("ReadChunk() = %q, want %q", got, payload)
+		t.Fatalf("ReadChunkTo() = %q, want %q", got, payload)
 	}
 }
 
@@ -210,25 +263,26 @@ func TestTCPChunkReader_ReadChunkTo_AppendsToDst(t *testing.T) {
 
 	enc, dec := newTCPChunkCipherPair(t)
 
+	var buf bytes.Buffer
+
 	var w shadowsocks.TCPChunkWriter
-	if err := w.Init(enc); err != nil {
+	if err := w.Init(enc, &buf); err != nil {
 		t.Fatalf("writer Init() error = %v", err)
 	}
 
 	var r shadowsocks.TCPChunkReader
-	if err := r.Init(dec); err != nil {
+	if err := r.Init(dec, &buf); err != nil {
 		t.Fatalf("reader Init() error = %v", err)
 	}
 
 	payload := []byte("payload")
 	prefix := []byte("prefix:")
 
-	var buf bytes.Buffer
-	if _, err := w.WriteChunk(&buf, payload); err != nil {
+	if _, err := w.WriteChunk(payload); err != nil {
 		t.Fatalf("WriteChunk() error = %v", err)
 	}
 
-	got, _, err := r.ReadChunkTo(append([]byte(nil), prefix...), &buf)
+	got, _, err := r.ReadChunkTo(append([]byte(nil), prefix...))
 	if err != nil {
 		t.Fatalf("ReadChunkTo() error = %v", err)
 	}
@@ -245,12 +299,12 @@ func TestTCPChunkWriter_WriteChunk_TooLarge(t *testing.T) {
 	enc, _ := newTCPChunkCipherPair(t)
 
 	var w shadowsocks.TCPChunkWriter
-	if err := w.Init(enc); err != nil {
+	if err := w.Init(enc, io.Discard); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 
 	payload := make([]byte, 0x10000)
-	_, err := w.WriteChunk(io.Discard, payload)
+	_, err := w.WriteChunk(payload)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -264,19 +318,19 @@ func TestTCPChunkReader_ReadChunk_ShortLengthRead(t *testing.T) {
 
 	_, dec := newTCPChunkCipherPair(t)
 
+	short := bytes.NewReader([]byte{1, 2, 3})
+
 	var r shadowsocks.TCPChunkReader
-	if err := r.Init(dec); err != nil {
+	if err := r.Init(dec, short); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	short := bytes.NewReader([]byte{1, 2, 3})
-
-	_, n, err := r.ReadChunkTo(nil, short)
+	_, n, err := r.ReadChunkTo(nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if n != 3 {
-		t.Fatalf("ReadChunk() read %d bytes, want 3", n)
+		t.Fatalf("ReadChunkTo() read %d bytes, want 3", n)
 	}
 	if err != io.EOF && err != io.ErrUnexpectedEOF {
 		t.Fatalf("unexpected error: %v", err)
@@ -288,19 +342,15 @@ func TestTCPChunkReader_ReadChunk_ShortPayloadRead(t *testing.T) {
 
 	enc, dec := newTCPChunkCipherPair(t)
 
+	var buf bytes.Buffer
+
 	var w shadowsocks.TCPChunkWriter
-	if err := w.Init(enc); err != nil {
+	if err := w.Init(enc, &buf); err != nil {
 		t.Fatalf("writer Init() error = %v", err)
 	}
 
-	var r shadowsocks.TCPChunkReader
-	if err := r.Init(dec); err != nil {
-		t.Fatalf("reader Init() error = %v", err)
-	}
-
 	payload := []byte("hello payload")
-	var buf bytes.Buffer
-	nw, err := w.WriteChunk(&buf, payload)
+	nw, err := w.WriteChunk(payload)
 	if err != nil {
 		t.Fatalf("WriteChunk() error = %v", err)
 	}
@@ -308,12 +358,17 @@ func TestTCPChunkReader_ReadChunk_ShortPayloadRead(t *testing.T) {
 	wire := buf.Bytes()
 	shortWire := wire[:len(wire)-2]
 
-	_, nr, err := r.ReadChunkTo(nil, bytes.NewReader(shortWire))
+	var r shadowsocks.TCPChunkReader
+	if err := r.Init(dec, bytes.NewReader(shortWire)); err != nil {
+		t.Fatalf("reader Init() error = %v", err)
+	}
+
+	_, nr, err := r.ReadChunkTo(nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if nr != nw-2 {
-		t.Fatalf("ReadChunk() read %d bytes, want %d", nr, nw-2)
+		t.Fatalf("ReadChunkTo() read %d bytes, want %d", nr, nw-2)
 	}
 	if err != io.EOF && err != io.ErrUnexpectedEOF {
 		t.Fatalf("unexpected error: %v", err)
@@ -340,22 +395,23 @@ func TestTCPChunkReader_ReadChunk_WrongCipherFails(t *testing.T) {
 		t.Fatalf("NewTCPStreamCipherFromPSK() error = %v", err)
 	}
 
+	var buf bytes.Buffer
+
 	var w shadowsocks.TCPChunkWriter
-	if err := w.Init(enc); err != nil {
+	if err := w.Init(enc, &buf); err != nil {
 		t.Fatalf("writer Init() error = %v", err)
 	}
 
 	var r shadowsocks.TCPChunkReader
-	if err := r.Init(wrongDec); err != nil {
+	if err := r.Init(wrongDec, &buf); err != nil {
 		t.Fatalf("reader Init() error = %v", err)
 	}
 
-	var buf bytes.Buffer
-	if _, err := w.WriteChunk(&buf, []byte("hello")); err != nil {
+	if _, err := w.WriteChunk([]byte("hello")); err != nil {
 		t.Fatalf("WriteChunk() error = %v", err)
 	}
 
-	_, _, err = r.ReadChunkTo(nil, &buf)
+	_, _, err = r.ReadChunkTo(nil)
 	if err == nil {
 		t.Fatal("expected decrypt error, got nil")
 	}

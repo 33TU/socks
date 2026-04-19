@@ -387,12 +387,12 @@ func TestDialer_DialContext_Success(t *testing.T) {
 		}
 
 		var reader shadowsocks.TCPChunkReader
-		if err := reader.Init(reqStart.Cipher); err != nil {
+		if err := reader.Init(reqStart.Cipher, c); err != nil {
 			t.Errorf("server: reader Init() error = %v", err)
 			return
 		}
 
-		payload, _, err := reader.ReadChunkTo(nil, c)
+		payload, _, err := reader.ReadChunkTo(nil)
 		if err != nil {
 			t.Errorf("server: ReadChunkTo() error = %v", err)
 			return

@@ -63,26 +63,26 @@ func TestTCPConn_Read(t *testing.T) {
 	enc, dec := newTCPConnCipherPair(t)
 
 	var writer shadowsocks.TCPChunkWriter
-	if err := writer.Init(enc); err != nil {
+	if err := writer.Init(enc, serverConn); err != nil {
 		t.Fatalf("writer.Init() error = %v", err)
 	}
 
 	var reader shadowsocks.TCPChunkReader
-	if err := reader.Init(dec); err != nil {
+	if err := reader.Init(dec, clientConn); err != nil {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
 	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
 		Reader: reader,
-		Writer: writer,
+		Writer: readerlessWriter(enc, clientConn),
 	}
 
 	want := []byte("hello world")
 
 	go func() {
 		defer serverConn.Close()
-		if _, err := writer.WriteChunk(serverConn, want); err != nil {
+		if _, err := writer.WriteChunk(want); err != nil {
 			t.Errorf("WriteChunk() error = %v", err)
 		}
 	}()
@@ -110,26 +110,26 @@ func TestTCPConn_Read_PartialBuffered(t *testing.T) {
 	enc, dec := newTCPConnCipherPair(t)
 
 	var writer shadowsocks.TCPChunkWriter
-	if err := writer.Init(enc); err != nil {
+	if err := writer.Init(enc, serverConn); err != nil {
 		t.Fatalf("writer.Init() error = %v", err)
 	}
 
 	var reader shadowsocks.TCPChunkReader
-	if err := reader.Init(dec); err != nil {
+	if err := reader.Init(dec, clientConn); err != nil {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
 	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
 		Reader: reader,
-		Writer: writer,
+		Writer: readerlessWriter(enc, clientConn),
 	}
 
 	want := []byte("hello world")
 
 	go func() {
 		defer serverConn.Close()
-		if _, err := writer.WriteChunk(serverConn, want); err != nil {
+		if _, err := writer.WriteChunk(want); err != nil {
 			t.Errorf("WriteChunk() error = %v", err)
 		}
 	}()
@@ -169,18 +169,18 @@ func TestTCPConn_Write(t *testing.T) {
 	enc, dec := newTCPConnCipherPair(t)
 
 	var writer shadowsocks.TCPChunkWriter
-	if err := writer.Init(enc); err != nil {
+	if err := writer.Init(enc, clientConn); err != nil {
 		t.Fatalf("writer.Init() error = %v", err)
 	}
 
 	var reader shadowsocks.TCPChunkReader
-	if err := reader.Init(dec); err != nil {
+	if err := reader.Init(dec, serverConn); err != nil {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
 	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
-		Reader: reader,
+		Reader: writerlessReader(dec, clientConn),
 		Writer: writer,
 	}
 
@@ -190,7 +190,7 @@ func TestTCPConn_Write(t *testing.T) {
 	go func() {
 		defer serverConn.Close()
 
-		got, _, err := reader.ReadChunkTo(nil, serverConn)
+		got, _, err := reader.ReadChunkTo(nil)
 		if err != nil {
 			errCh <- err
 			return
@@ -225,12 +225,12 @@ func TestTCPConn_Write_Empty(t *testing.T) {
 	enc, dec := newTCPConnCipherPair(t)
 
 	var writer shadowsocks.TCPChunkWriter
-	if err := writer.Init(enc); err != nil {
+	if err := writer.Init(enc, clientConn); err != nil {
 		t.Fatalf("writer.Init() error = %v", err)
 	}
 
 	var reader shadowsocks.TCPChunkReader
-	if err := reader.Init(dec); err != nil {
+	if err := reader.Init(dec, clientConn); err != nil {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
@@ -259,18 +259,18 @@ func TestTCPConn_Write_SplitsLargePayload(t *testing.T) {
 	enc, dec := newTCPConnCipherPair(t)
 
 	var writer shadowsocks.TCPChunkWriter
-	if err := writer.Init(enc); err != nil {
+	if err := writer.Init(enc, clientConn); err != nil {
 		t.Fatalf("writer.Init() error = %v", err)
 	}
 
 	var reader shadowsocks.TCPChunkReader
-	if err := reader.Init(dec); err != nil {
+	if err := reader.Init(dec, serverConn); err != nil {
 		t.Fatalf("reader.Init() error = %v", err)
 	}
 
 	c := &shadowsocks.TCPConn{
 		Conn:   clientConn,
-		Reader: reader,
+		Reader: writerlessReader(dec, clientConn),
 		Writer: writer,
 	}
 
@@ -282,14 +282,14 @@ func TestTCPConn_Write_SplitsLargePayload(t *testing.T) {
 
 		var got []byte
 
-		part1, _, err := reader.ReadChunkTo(nil, serverConn)
+		part1, _, err := reader.ReadChunkTo(nil)
 		if err != nil {
 			done <- err
 			return
 		}
 		got = append(got, part1...)
 
-		part2, _, err := reader.ReadChunkTo(nil, serverConn)
+		part2, _, err := reader.ReadChunkTo(nil)
 		if err != nil {
 			done <- err
 			return
@@ -314,4 +314,22 @@ func TestTCPConn_Write_SplitsLargePayload(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("server read error = %v", err)
 	}
+}
+
+// helpers for constructing a TCPConn in tests where only one side is actually used
+
+func readerlessWriter(enc *shadowsocks.TCPStreamCipher, dst net.Conn) shadowsocks.TCPChunkWriter {
+	var w shadowsocks.TCPChunkWriter
+	if err := w.Init(enc, dst); err != nil {
+		panic(err)
+	}
+	return w
+}
+
+func writerlessReader(dec *shadowsocks.TCPStreamCipher, src net.Conn) shadowsocks.TCPChunkReader {
+	var r shadowsocks.TCPChunkReader
+	if err := r.Init(dec, src); err != nil {
+		panic(err)
+	}
+	return r
 }
