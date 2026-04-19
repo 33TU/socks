@@ -14,8 +14,12 @@ type TcpConn struct {
 
 	readBuf []byte
 
-	reqStart  *TCPClientRequestStart
-	respStart *TCPClientResponseStart
+	requestMethod Method
+	requestPSK    []byte
+	requestSalt   []byte
+	requestCipher *TCPStreamCipher
+
+	responseStart *ParsedTCPResponseStart
 
 	readInitMu  sync.Mutex
 	writeInitMu sync.Mutex
@@ -29,31 +33,35 @@ func (c *TcpConn) ensureReadReady() error {
 		return nil
 	}
 
-	if c.respStart != nil {
-		if c.respStart.ResponseCipher == nil {
-			return fmt.Errorf("missing TCP client response cipher")
+	if c.responseStart != nil {
+		if c.responseStart.Cipher == nil {
+			return fmt.Errorf("missing TCP response cipher")
 		}
-		if err := c.Reader.Init(c.respStart.ResponseCipher); err != nil {
+		if err := c.Reader.Init(c.responseStart.Cipher); err != nil {
 			return err
 		}
-		c.readBuf = append(c.readBuf[:0], c.respStart.InitialPayload...)
+		c.readBuf = append(c.readBuf[:0], c.responseStart.InitialPayload...)
 		return nil
 	}
 
-	if c.reqStart == nil {
-		return fmt.Errorf("missing TCP client request start")
+	if err := c.requestMethod.Validate(); err != nil {
+		return err
+	}
+	if len(c.requestPSK) != c.requestMethod.KeySize {
+		return fmt.Errorf("invalid request PSK length: got %d, want %d", len(c.requestPSK), c.requestMethod.KeySize)
+	}
+	if len(c.requestSalt) != c.requestMethod.SaltSize {
+		return fmt.Errorf("invalid request salt length: got %d, want %d", len(c.requestSalt), c.requestMethod.SaltSize)
 	}
 
-	respStart, _, err := c.reqStart.ReadResponseStart(c.Conn)
+	respStart, _, err := ReadTCPResponseStart(c.Conn, c.requestMethod, c.requestPSK, c.requestSalt)
 	if err != nil {
 		return err
 	}
-
-	if err := c.Reader.Init(respStart.ResponseCipher); err != nil {
+	if err := c.Reader.Init(respStart.Cipher); err != nil {
 		return err
 	}
-
-	c.respStart = respStart
+	c.responseStart = respStart
 	c.readBuf = append(c.readBuf[:0], respStart.InitialPayload...)
 	return nil
 }
@@ -65,12 +73,10 @@ func (c *TcpConn) ensureWriteReady() error {
 	if c.Writer.Cipher != nil {
 		return nil
 	}
-
-	if c.reqStart == nil {
-		return fmt.Errorf("missing TCP client request start")
+	if c.requestCipher == nil {
+		return fmt.Errorf("missing TCP request cipher")
 	}
-
-	return c.Writer.Init(c.reqStart.RequestCipher)
+	return c.Writer.Init(c.requestCipher)
 }
 
 func (c *TcpConn) Read(p []byte) (int, error) {
@@ -95,7 +101,6 @@ func (c *TcpConn) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-
 	if err := c.ensureWriteReady(); err != nil {
 		return 0, err
 	}
@@ -106,15 +111,12 @@ func (c *TcpConn) Write(p []byte) (int, error) {
 		if nn > 0xFFFF {
 			nn = 0xFFFF
 		}
-
 		if _, err := c.Writer.WriteChunk(c.Conn, p[:nn]); err != nil {
 			return written, err
 		}
-
 		written += nn
 		p = p[nn:]
 	}
-
 	return written, nil
 }
 

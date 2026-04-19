@@ -159,27 +159,25 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 	cleanup := bindConnToContext(ctx, conn)
 	defer cleanup()
 
-	var reqStart TCPClientRequestStart
-	if err := reqStart.Init(method, psk, requestSalt); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	if _, err := reqStart.WriteRequestStart(conn, time.Now(), target, []byte{0}, nil); err != nil {
+	requestCipher, _, err := WriteTCPRequestStart(conn, method, psk, requestSalt, time.Now(), target, []byte{0}, nil)
+	if err != nil {
 		conn.Close()
 		return nil, err
 	}
 
 	var writer TCPChunkWriter
-	if err := writer.Init(reqStart.RequestCipher); err != nil {
+	if err := writer.Init(requestCipher); err != nil {
 		conn.Close()
 		return nil, err
 	}
 
 	return &TcpConn{
-		Conn:     conn,
-		Writer:   writer,
-		reqStart: &reqStart,
+		Conn:          conn,
+		Writer:        writer,
+		requestMethod: method,
+		requestPSK:    append([]byte(nil), psk...),
+		requestSalt:   append([]byte(nil), requestSalt...),
+		requestCipher: requestCipher,
 	}, nil
 }
 
