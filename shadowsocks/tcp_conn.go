@@ -221,10 +221,7 @@ func (c *TcpConn) Write(p []byte) (int, error) {
 
 	written := 0
 	for len(p) > 0 {
-		nn := len(p)
-		if nn > 0xFFFF {
-			nn = 0xFFFF
-		}
+		nn := min(len(p), 0xFFFF)
 		if _, err := c.Writer.WriteChunk(c.Conn, p[:nn]); err != nil {
 			return written, err
 		}
