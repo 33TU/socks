@@ -358,4 +358,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📄 License
 
-MIT
+socks is available under the [MIT License](LICENSE).
