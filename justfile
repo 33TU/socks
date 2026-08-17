@@ -32,6 +32,10 @@ run-example-shadowsocks-dial:
 run-example-shadowsocks-udp:
     cd shadowsocks && go run ./examples/udp
 
+# Local SOCKS5 front end tunnelling through a Shadowsocks proxy.
+run-example-shadowsocks-socks5-local:
+    cd shadowsocks && go run ./examples/socks5-local
+
 test-shadowsocks:
     cd shadowsocks && go test ./...
 

@@ -425,6 +425,36 @@ client := &http.Client{
 resp, err := client.Get("https://example.com")
 ```
 
+### Local SOCKS5 Front End
+
+A Shadowsocks client is normally exposed to local applications as a SOCKS5
+server. Because `shadowsocks.Dialer` satisfies the dialer interface the SOCKS5
+server takes, that is just a matter of wiring the two together:
+
+```go
+dialer, err := shadowsocks.NewDialerFromURLString("ss://...", nil)
+if err != nil {
+	log.Fatal(err)
+}
+
+handler := &socks5.BaseServerHandler{
+	Dialer:       dialer, // every outbound connection goes through the tunnel
+	AllowConnect: true,
+}
+
+log.Fatal(socks5.ListenAndServe(ctx, "tcp", "127.0.0.1:1080", handler))
+```
+
+```bash
+curl --socks5-hostname 127.0.0.1:1080 https://example.com
+```
+
+Target host names are passed through to the Shadowsocks server and resolved
+there, so DNS does not leak locally. Leave BIND, UDP ASSOCIATE and RESOLVE
+disabled on such a handler: the SOCKS5 server implements those with its own
+sockets and resolver, which would send that traffic outside the tunnel. For UDP
+through Shadowsocks, use `Dialer.ListenPacket` instead.
+
 ### Shadowsocks Client (UDP)
 
 `ListenPacket` opens one UDP relay session and returns a `net.PacketConn`, so
@@ -488,6 +518,7 @@ Check the [`examples/`](examples/) directory for more complete examples:
 * [`shadowsocks/examples/server/`](shadowsocks/examples/server/) - Shadowsocks 2022 TCP and UDP server
 * [`shadowsocks/examples/dial/`](shadowsocks/examples/dial/) - HTTP request through a Shadowsocks 2022 proxy
 * [`shadowsocks/examples/udp/`](shadowsocks/examples/udp/) - DNS query through a Shadowsocks 2022 UDP relay
+* [`shadowsocks/examples/socks5-local/`](shadowsocks/examples/socks5-local/) - Local SOCKS5 server tunnelling through Shadowsocks 2022
 
 ---
 
