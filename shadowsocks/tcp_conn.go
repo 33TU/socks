@@ -4,19 +4,36 @@ import (
 	"fmt"
 	"net"
 	"time"
+
+	socksnet "github.com/33TU/socks/net"
 )
 
+// TCPConn is a net.Conn carrying one Shadowsocks 2022 proxy connection.
+//
+// A proxy connection consists of two independent streams. The client writes the
+// request stream and reads the response stream; the server does the opposite.
+// Both streams start lazily in the reading direction: a client reads the
+// response start on its first Read, and a server writes the response start on
+// its first Write, so that the response header always travels with payload.
 type TCPConn struct {
 	net.Conn
 
 	Reader TCPChunkReader
 	Writer TCPChunkWriter
 
-	responseMethod Method
-	responsePSK    []byte
-	requestSalt    []byte
+	method      Method
+	psk         []byte
+	requestSalt []byte
+
+	// responsePending marks a server connection whose response stream has not
+	// been started yet.
+	responsePending bool
 }
 
+// NewClientTCPConn starts a request stream on conn and returns the proxy connection.
+//
+// Either padding or initialPayload must be non-empty. The salt and both header
+// chunks are written to conn in a single write call.
 func NewClientTCPConn(
 	conn net.Conn,
 	method Method,
@@ -57,21 +74,26 @@ func NewClientTCPConn(
 		return nil, err
 	}
 
-	var writer TCPChunkWriter
-	if err := writer.Init(requestCipher, conn); err != nil {
+	c := &TCPConn{
+		Conn:        conn,
+		method:      method,
+		psk:         append([]byte(nil), psk...),
+		requestSalt: requestSalt,
+	}
+	if err := c.Writer.Init(requestCipher, conn); err != nil {
 		return nil, err
 	}
 
-	return &TCPConn{
-		Conn:           conn,
-		Writer:         writer,
-		responseMethod: method,
-		responsePSK:    append([]byte(nil), psk...),
-		requestSalt:    append([]byte(nil), requestSalt...),
-	}, nil
+	return c, nil
 }
 
-func NewServerTCPConn(conn net.Conn, method Method, psk []byte) (*TCPConn, *ParsedTCPRequestStart, error) {
+// NewServerTCPConn reads a request stream start from conn and returns the proxy
+// connection along with the parsed request.
+//
+// The request timestamp is checked against now and its salt against replay,
+// which may be nil to skip the replay check. The response stream is started on
+// the first Write.
+func NewServerTCPConn(conn net.Conn, method Method, psk []byte, now time.Time, replay *ReplayCache) (*TCPConn, *ParsedTCPRequestStart, error) {
 	if conn == nil {
 		return nil, nil, fmt.Errorf("nil net.Conn")
 	}
@@ -82,88 +104,97 @@ func NewServerTCPConn(conn net.Conn, method Method, psk []byte) (*TCPConn, *Pars
 		return nil, nil, fmt.Errorf("invalid PSK length: got %d, want %d", len(psk), method.KeySize)
 	}
 
-	reqStart, _, err := ReadTCPRequestStart(conn, method, psk)
+	reqStart, _, err := ReadTCPRequestStart(conn, method, psk, now, replay)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	var reader TCPChunkReader
-	if err := reader.Init(reqStart.Cipher, conn); err != nil {
+	c := &TCPConn{
+		Conn:            conn,
+		method:          method,
+		psk:             append([]byte(nil), psk...),
+		requestSalt:     reqStart.Salt,
+		responsePending: true,
+	}
+	if err := c.Reader.Init(reqStart.Cipher, conn); err != nil {
 		return nil, nil, err
 	}
 
-	c := &TCPConn{
-		Conn:   conn,
-		Reader: reader,
-	}
-
+	// The initial payload arrived inside the header chunk, ahead of the stream.
 	if len(reqStart.Header.InitialData) > 0 {
-		c.Reader.chunkBuf = append(c.Reader.chunkBuf[:0], reqStart.Header.InitialData...)
-		c.Reader.readBuf = c.Reader.chunkBuf
+		c.Reader.pushFront(reqStart.Header.InitialData)
 	}
 
 	return c, reqStart, nil
 }
 
-func (c *TCPConn) InitResponse(method Method, psk []byte, requestSalt []byte, initialPayload []byte) error {
+// RequestSalt returns the salt of the request stream.
+func (c *TCPConn) RequestSalt() []byte {
+	return c.requestSalt
+}
+
+// InitResponse starts the response stream, writing the response salt, header and
+// first payload chunk in a single write call.
+//
+// Servers normally let the first Write start the response stream instead.
+func (c *TCPConn) InitResponse(initialPayload []byte) error {
 	if c == nil {
 		return fmt.Errorf("nil TCPConn")
 	}
 	if c.Conn == nil {
 		return fmt.Errorf("nil net.Conn")
 	}
-	if err := method.Validate(); err != nil {
+	if len(initialPayload) > MaxTCPChunkPayloadLength {
+		return fmt.Errorf("initial payload too large: got %d, max %d", len(initialPayload), MaxTCPChunkPayloadLength)
+	}
+	if err := c.method.Validate(); err != nil {
 		return err
 	}
-	if len(psk) != method.KeySize {
-		return fmt.Errorf("invalid PSK length: got %d, want %d", len(psk), method.KeySize)
+	if len(c.psk) != c.method.KeySize {
+		return fmt.Errorf("invalid PSK length: got %d, want %d", len(c.psk), c.method.KeySize)
 	}
-	if len(requestSalt) != method.SaltSize {
-		return fmt.Errorf("invalid request salt length: got %d, want %d", len(requestSalt), method.SaltSize)
+	if len(c.requestSalt) != c.method.SaltSize {
+		return fmt.Errorf("invalid request salt length: got %d, want %d", len(c.requestSalt), c.method.SaltSize)
 	}
 
-	responseSalt := make([]byte, method.SaltSize)
-	if err := FillSaltTo(responseSalt, method); err != nil {
+	responseSalt := make([]byte, c.method.SaltSize)
+	if err := FillSaltTo(responseSalt, c.method); err != nil {
 		return err
 	}
 
 	responseCipher, _, err := WriteTCPResponseStart(
 		c.Conn,
-		method,
-		psk,
+		c.method,
+		c.psk,
 		responseSalt,
 		time.Now(),
-		requestSalt,
+		c.requestSalt,
 		initialPayload,
 	)
 	if err != nil {
 		return err
 	}
 
+	c.responsePending = false
 	return c.Writer.Init(responseCipher, c.Conn)
 }
 
+// ensureClientResponseReady reads the response stream start on a client connection.
 func (c *TCPConn) ensureClientResponseReady() error {
-	if c == nil {
-		return fmt.Errorf("nil TCPConn")
-	}
 	if c.Conn == nil {
 		return fmt.Errorf("nil net.Conn")
 	}
-	if c.Reader.Cipher != nil {
-		return nil
-	}
-	if err := c.responseMethod.Validate(); err != nil {
+	if err := c.method.Validate(); err != nil {
 		return err
 	}
-	if len(c.responsePSK) != c.responseMethod.KeySize {
-		return fmt.Errorf("invalid response PSK length: got %d, want %d", len(c.responsePSK), c.responseMethod.KeySize)
+	if len(c.psk) != c.method.KeySize {
+		return fmt.Errorf("invalid response PSK length: got %d, want %d", len(c.psk), c.method.KeySize)
 	}
-	if len(c.requestSalt) != c.responseMethod.SaltSize {
-		return fmt.Errorf("invalid request salt length: got %d, want %d", len(c.requestSalt), c.responseMethod.SaltSize)
+	if len(c.requestSalt) != c.method.SaltSize {
+		return fmt.Errorf("invalid request salt length: got %d, want %d", len(c.requestSalt), c.method.SaltSize)
 	}
 
-	respStart, _, err := ReadTCPResponseStart(c.Conn, c.responseMethod, c.responsePSK, c.requestSalt)
+	respStart, _, err := ReadTCPResponseStart(c.Conn, c.method, c.psk, c.requestSalt, time.Now())
 	if err != nil {
 		return err
 	}
@@ -172,20 +203,20 @@ func (c *TCPConn) ensureClientResponseReady() error {
 		return err
 	}
 
+	// The first payload chunk follows the header immediately, ahead of the stream.
 	if len(respStart.InitialPayload) > 0 {
-		c.Reader.chunkBuf = append(c.Reader.chunkBuf[:0], respStart.InitialPayload...)
-		c.Reader.readBuf = c.Reader.chunkBuf
+		c.Reader.pushFront(respStart.InitialPayload)
 	}
 
 	return nil
 }
 
 func (c *TCPConn) Read(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
 	if c == nil {
 		return 0, fmt.Errorf("nil TCPConn")
+	}
+	if len(p) == 0 {
+		return 0, nil
 	}
 	if c.Reader.Cipher == nil {
 		if err := c.ensureClientResponseReady(); err != nil {
@@ -196,13 +227,51 @@ func (c *TCPConn) Read(p []byte) (int, error) {
 }
 
 func (c *TCPConn) Write(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
 	if c == nil {
 		return 0, fmt.Errorf("nil TCPConn")
 	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	if c.responsePending {
+		// The response header must be sent along with payload, so the first
+		// chunk rides inside the response start.
+		initial := p
+		if len(initial) > MaxTCPChunkPayloadLength {
+			initial = initial[:MaxTCPChunkPayloadLength]
+		}
+		if err := c.InitResponse(initial); err != nil {
+			return 0, err
+		}
+
+		rest := p[len(initial):]
+		if len(rest) == 0 {
+			return len(initial), nil
+		}
+
+		n, err := c.Writer.Write(rest)
+		return len(initial) + n, err
+	}
+
 	return c.Writer.Write(p)
 }
 
-var _ net.Conn = (*TCPConn)(nil)
+// CloseWrite shuts down the writing half of the underlying connection.
+//
+// Shadowsocks streams carry no end-of-stream marker, so a half close is how the
+// end of a stream is signalled to the peer.
+func (c *TCPConn) CloseWrite() error {
+	if c == nil || c.Conn == nil {
+		return fmt.Errorf("nil TCPConn")
+	}
+	if cw, ok := c.Conn.(socksnet.CloseWriter); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
+}
+
+var (
+	_ net.Conn             = (*TCPConn)(nil)
+	_ socksnet.CloseWriter = (*TCPConn)(nil)
+)

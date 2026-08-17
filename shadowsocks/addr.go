@@ -86,6 +86,9 @@ func (a *Addr) EncodedLen() int {
 
 // Decode decodes an address from src.
 // It returns the number of bytes consumed.
+//
+// The decoded address owns its memory and never aliases src, which is often a
+// pooled scratch buffer that is reused as soon as decoding returns.
 func (a *Addr) Decode(src []byte) (int, error) {
 	if len(src) < 1 {
 		return 0, ErrShortAddr
@@ -100,8 +103,8 @@ func (a *Addr) Decode(src []byte) (int, error) {
 		if len(src) < 1+4+2 {
 			return 0, ErrShortAddr
 		}
-		a.IP = net.IP(src[1 : 1+4]).To4()
-		if a.IP == nil {
+		a.IP = append(net.IP(nil), src[1:1+4]...)
+		if a.IP.To4() == nil {
 			return 0, ErrInvalidAddr
 		}
 		a.Port = binary.BigEndian.Uint16(src[5:7])
@@ -111,8 +114,8 @@ func (a *Addr) Decode(src []byte) (int, error) {
 		if len(src) < 1+16+2 {
 			return 0, ErrShortAddr
 		}
-		a.IP = net.IP(src[1 : 1+16]).To16()
-		if a.IP == nil || a.IP.To4() != nil {
+		a.IP = append(net.IP(nil), src[1:1+16]...)
+		if a.IP.To16() == nil || a.IP.To4() != nil {
 			return 0, ErrInvalidAddr
 		}
 		a.Port = binary.BigEndian.Uint16(src[17:19])

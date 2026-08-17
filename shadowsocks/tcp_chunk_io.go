@@ -104,6 +104,13 @@ func (r *TCPChunkReader) ReadChunkTo(dst []byte) ([]byte, int64, error) {
 	return dst, total, nil
 }
 
+// pushFront buffers payload that arrived ahead of the chunk stream, such as the
+// initial payload carried inside a header chunk, to be returned by the next reads.
+func (r *TCPChunkReader) pushFront(payload []byte) {
+	r.chunkBuf = append(r.chunkBuf[:0], payload...)
+	r.readBuf = r.chunkBuf
+}
+
 // Read implements io.Reader over the decrypted TCP stream.
 func (r *TCPChunkReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
@@ -175,8 +182,8 @@ func (w *TCPChunkWriter) WriteChunk(payload []byte) (int64, error) {
 	if err := w.Validate(); err != nil {
 		return 0, err
 	}
-	if len(payload) > 0xFFFF {
-		return 0, fmt.Errorf("payload too large: got %d, max %d", len(payload), 0xFFFF)
+	if len(payload) > MaxTCPChunkPayloadLength {
+		return 0, fmt.Errorf("payload too large: got %d, max %d", len(payload), MaxTCPChunkPayloadLength)
 	}
 
 	need := w.Cipher.EncryptedChunkLength() + w.Cipher.EncryptedPayloadLength(len(payload))
@@ -212,7 +219,7 @@ func (w *TCPChunkWriter) Write(p []byte) (int, error) {
 
 	written := 0
 	for len(p) > 0 {
-		nn := min(len(p), 0xFFFF)
+		nn := min(len(p), MaxTCPChunkPayloadLength)
 		if _, err := w.WriteChunk(p[:nn]); err != nil {
 			return written, err
 		}

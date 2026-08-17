@@ -460,3 +460,52 @@ func TestAddr_String(t *testing.T) {
 		})
 	}
 }
+
+// TestAddr_DecodeDoesNotAliasSource guards against a decoded address pointing
+// into the caller's buffer. Headers are decrypted into pooled scratch buffers
+// that are recycled as soon as decoding returns, so an aliased IP would be
+// silently rewritten by whichever goroutine picks the buffer up next.
+func TestAddr_DecodeDoesNotAliasSource(t *testing.T) {
+	tests := []struct {
+		name string
+		src  []byte
+		want string
+	}{
+		{
+			name: "IPv4",
+			src:  []byte{shadowsocks.AddrTypeIPv4, 192, 0, 2, 1, 0x01, 0xbb},
+			want: "192.0.2.1",
+		},
+		{
+			name: "IPv6",
+			src: append(
+				[]byte{shadowsocks.AddrTypeIPv6},
+				append(net.ParseIP("2001:db8::1").To16(), 0x01, 0xbb)...,
+			),
+			want: "2001:db8::1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := append([]byte(nil), tt.src...)
+
+			var addr shadowsocks.Addr
+			if _, err := addr.Decode(src); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			if got := addr.GetHost(); got != tt.want {
+				t.Fatalf("host = %s, want %s", got, tt.want)
+			}
+
+			// Recycling the source buffer must not disturb the decoded address.
+			for i := range src {
+				src[i] = 0xff
+			}
+
+			if got := addr.GetHost(); got != tt.want {
+				t.Fatalf("host after source reuse = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}

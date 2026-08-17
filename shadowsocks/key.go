@@ -53,11 +53,21 @@ func DeriveSubkeyTo(dst []byte, method Method, key, salt []byte) error {
 	if err := method.Validate(); err != nil {
 		return err
 	}
-	if len(key) != method.KeySize {
-		return fmt.Errorf("invalid key length: got %d, want %d", len(key), method.KeySize)
-	}
 	if len(salt) != method.SaltSize {
 		return fmt.Errorf("invalid salt length: got %d, want %d", len(salt), method.SaltSize)
+	}
+
+	return deriveSubkeyTo(dst, method, key, salt)
+}
+
+// deriveSubkeyTo derives a session subkey into dst from key material of any
+// length. UDP sessions key on an 8-byte session ID rather than a full-size salt.
+func deriveSubkeyTo(dst []byte, method Method, key, salt []byte) error {
+	if err := method.Validate(); err != nil {
+		return err
+	}
+	if len(key) != method.KeySize {
+		return fmt.Errorf("invalid key length: got %d, want %d", len(key), method.KeySize)
 	}
 	if len(dst) != method.KeySize {
 		return fmt.Errorf("invalid subkey length: got %d, want %d", len(dst), method.KeySize)

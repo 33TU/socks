@@ -31,3 +31,11 @@ var (
 	ErrMissingTCPResponseSalt    = errors.New("missing TCP response salt")        // res
 	ErrInvalidTCPResponseSaltLen = errors.New("invalid TCP response salt length") // res
 )
+
+// ErrReplayDetected is returned when a request salt has already been seen
+// within the replay window.
+var ErrReplayDetected = errors.New("replay detected")
+
+// MaxTCPChunkPayloadLength is the largest plaintext payload a single TCP chunk
+// can carry. Unlike Shadowsocks AEAD, this edition allows the full u16 range.
+const MaxTCPChunkPayloadLength = 0xFFFF

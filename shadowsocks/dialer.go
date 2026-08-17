@@ -16,6 +16,10 @@ type Dialer struct {
 	ProxyAddr string
 	Config    *Config
 	Dialer    socksnet.Dialer
+
+	// Padding decides the padding added to request headers.
+	// A nil policy means PadWhenEmpty(MaxPaddingLength).
+	Padding PaddingPolicy
 }
 
 // NewDialer creates a new Shadowsocks dialer instance.
@@ -119,26 +123,7 @@ func (d *Dialer) Dial(network, address string) (net.Conn, error) {
 
 // DialConnContext upgrades an existing connection into a Shadowsocks TCP stream.
 func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, address string) (net.Conn, error) {
-	if d == nil {
-		conn.Close()
-		return nil, fmt.Errorf("nil shadowsocks dialer")
-	}
-	if d.Config == nil {
-		conn.Close()
-		return nil, fmt.Errorf("missing shadowsocks config")
-	}
-	if err := d.Config.Validate(); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	method, err := ParseMethod(d.Config.Method)
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	psk, err := DecodePSKTo(nil, method, d.Config.PSK)
+	method, psk, err := d.clientCipher()
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -154,19 +139,12 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 	cleanup := bindConnToContext(ctx, conn)
 	defer cleanup()
 
-	paddingLen, err := RandomInt(1, 64) // make configurable later
+	padding, err := d.buildPadding(target, 0)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
-
-	padding := internal.GetBytes(paddingLen)
 	defer internal.PutBytes(padding)
-
-	if err := FillRandomBytes(padding); err != nil {
-		conn.Close()
-		return nil, err
-	}
 
 	ssConn, err := NewClientTCPConn(conn, method, psk, target, padding, nil)
 	if err != nil {
@@ -179,6 +157,88 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 // DialConn upgrades an existing connection using background context.
 func (d *Dialer) DialConn(conn net.Conn, network, address string) (net.Conn, error) {
 	return d.DialConnContext(context.Background(), conn, network, address)
+}
+
+// ListenPacket opens a UDP relay session through the Shadowsocks proxy.
+//
+// The returned connection is a net.PacketConn: each WriteTo tunnels a datagram
+// to the proxy, which relays it to the given target address. A single relay
+// session is used for the life of the connection, so callers that need separate
+// sessions should open separate connections.
+func (d *Dialer) ListenPacket(ctx context.Context, cfg *UDPConnConfig) (*UDPConn, error) {
+	method, psk, err := d.clientCipher()
+	if err != nil {
+		return nil, err
+	}
+
+	serverAddr, err := net.ResolveUDPAddr("udp", d.ProxyAddr)
+	if err != nil {
+		return nil, fmt.Errorf("resolve proxy address %s: %w", d.ProxyAddr, err)
+	}
+
+	var lc net.ListenConfig
+	pc, err := lc.ListenPacket(ctx, "udp", ":0")
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := NewUDPConn(pc, serverAddr, method, psk, cfg)
+	if err != nil {
+		pc.Close()
+		return nil, err
+	}
+
+	return conn, nil
+}
+
+// clientCipher returns the method and PSK from the dialer's config.
+func (d *Dialer) clientCipher() (Method, []byte, error) {
+	if d == nil {
+		return Method{}, nil, fmt.Errorf("nil shadowsocks dialer")
+	}
+	if d.Config == nil {
+		return Method{}, nil, fmt.Errorf("missing shadowsocks config")
+	}
+	if err := d.Config.Validate(); err != nil {
+		return Method{}, nil, err
+	}
+
+	method, err := ParseMethod(d.Config.Method)
+	if err != nil {
+		return Method{}, nil, err
+	}
+
+	psk, err := DecodePSKTo(nil, method, d.Config.PSK)
+	if err != nil {
+		return Method{}, nil, err
+	}
+
+	return method, psk, nil
+}
+
+// buildPadding returns random padding for a request header according to the
+// dialer's padding policy. The returned slice comes from the byte pool.
+func (d *Dialer) buildPadding(target Addr, payloadLen int) ([]byte, error) {
+	policy := d.Padding
+	if policy == nil {
+		policy = PadWhenEmpty(MaxPaddingLength)
+	}
+
+	paddingLen, err := policy(target, payloadLen)
+	if err != nil {
+		return nil, err
+	}
+	if paddingLen == 0 {
+		return nil, nil
+	}
+
+	padding := internal.GetBytes(paddingLen)
+	if err := FillRandomBytes(padding); err != nil {
+		internal.PutBytes(padding)
+		return nil, err
+	}
+
+	return padding, nil
 }
 
 // dialProxy connects to the Shadowsocks proxy server.

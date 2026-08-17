@@ -143,8 +143,8 @@ func (s *TCPStreamCipher) DecodeChunkLength(src []byte, scratch []byte) (uint16,
 
 // EncodeChunkPayloadTo encrypts a TCP payload chunk into dst.
 func (s *TCPStreamCipher) EncodeChunkPayloadTo(dst, payload []byte) ([]byte, error) {
-	if len(payload) > 0xFFFF {
-		return nil, fmt.Errorf("payload too large: got %d, max %d", len(payload), 0xFFFF)
+	if len(payload) > MaxTCPChunkPayloadLength {
+		return nil, fmt.Errorf("payload too large: got %d, max %d", len(payload), MaxTCPChunkPayloadLength)
 	}
 	return s.SealTo(dst, payload)
 }

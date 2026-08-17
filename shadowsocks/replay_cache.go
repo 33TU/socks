@@ -5,10 +5,17 @@ import (
 	"time"
 )
 
+// replayPurgeInterval is how often lookups sweep the cache for expired salts.
+// Sweeping is O(n), and every accepted connection performs a lookup, so it is
+// throttled: an expired entry is rejected by its own expiry time regardless,
+// and only the memory it occupies is held a little longer.
+const replayPurgeInterval = 10 * time.Second
+
 // ReplayCache stores recently seen TCP salts for replay protection.
 type ReplayCache struct {
-	mu    sync.Mutex
-	items map[string]time.Time
+	mu        sync.Mutex
+	items     map[string]time.Time
+	lastPurge time.Time
 }
 
 // NewReplayCache creates a new replay cache.
@@ -27,7 +34,7 @@ func (c *ReplayCache) Seen(salt []byte, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.purgeExpiredLocked(now)
+	c.maybePurgeLocked(now)
 
 	expiry, ok := c.items[string(salt)]
 	if !ok {
@@ -50,7 +57,7 @@ func (c *ReplayCache) Add(salt []byte, now time.Time, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.purgeExpiredLocked(now)
+	c.maybePurgeLocked(now)
 	c.items[string(salt)] = now.Add(ttl)
 }
 
@@ -64,7 +71,7 @@ func (c *ReplayCache) SeenOrAdd(salt []byte, now time.Time, ttl time.Duration) b
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.purgeExpiredLocked(now)
+	c.maybePurgeLocked(now)
 
 	key := string(salt)
 	expiry, ok := c.items[key]
@@ -113,7 +120,17 @@ func (c *ReplayCache) Len(now time.Time) int {
 	return len(c.items)
 }
 
+// maybePurgeLocked sweeps expired entries, at most once per purge interval.
+func (c *ReplayCache) maybePurgeLocked(now time.Time) {
+	if now.Sub(c.lastPurge) < replayPurgeInterval {
+		return
+	}
+	c.purgeExpiredLocked(now)
+}
+
 func (c *ReplayCache) purgeExpiredLocked(now time.Time) {
+	c.lastPurge = now
+
 	for k, expiry := range c.items {
 		if !expiry.After(now) {
 			delete(c.items, k)

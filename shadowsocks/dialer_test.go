@@ -367,7 +367,7 @@ func TestDialer_DialContext_Success(t *testing.T) {
 	proxyAddr, stop := startMockShadowsocksServer(t, func(c net.Conn) {
 		defer c.Close()
 
-		reqStart, _, err := shadowsocks.ReadTCPRequestStart(c, method, psk)
+		reqStart, _, err := shadowsocks.ReadTCPRequestStart(c, method, psk, time.Now(), nil)
 		if err != nil {
 			t.Errorf("server: ReadTCPRequestStart() error = %v", err)
 			return
@@ -460,7 +460,7 @@ func TestDialer_DialContext_Deadline(t *testing.T) {
 	proxyAddr, stop := startMockShadowsocksServer(t, func(c net.Conn) {
 		defer c.Close()
 
-		reqStart, _, err := shadowsocks.ReadTCPRequestStart(c, method, psk)
+		reqStart, _, err := shadowsocks.ReadTCPRequestStart(c, method, psk, time.Now(), nil)
 		if err != nil {
 			return
 		}

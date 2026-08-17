@@ -146,7 +146,12 @@ func WriteTCPRequestStart(dst io.Writer, method Method, psk, requestSalt []byte,
 }
 
 // ReadTCPRequestStart reads and decrypts a full client request startup.
-func ReadTCPRequestStart(src io.Reader, method Method, psk []byte) (*ParsedTCPRequestStart, int64, error) {
+//
+// The salt and the fixed-length header are consumed with a single read call, as
+// required for detection prevention. The header timestamp is checked against now,
+// and the request salt is checked against replay, which may be nil to skip the
+// replay check.
+func ReadTCPRequestStart(src io.Reader, method Method, psk []byte, now time.Time, replay *ReplayCache) (*ParsedTCPRequestStart, int64, error) {
 	var total int64
 	if err := method.Validate(); err != nil {
 		return nil, 0, err
@@ -155,23 +160,20 @@ func ReadTCPRequestStart(src io.Reader, method Method, psk []byte) (*ParsedTCPRe
 		return nil, 0, fmt.Errorf("invalid PSK length: got %d, want %d", len(psk), method.KeySize)
 	}
 
-	requestSaltBuf := internal.GetBytes(method.SaltSize)
-	defer internal.PutBytes(requestSaltBuf)
-	n, err := io.ReadFull(src, requestSaltBuf)
+	// The salt and the fixed-length header must be read in one call so that the
+	// number of bytes consumed never depends on how far validation got.
+	encFixedLen := TcpRequestFixedHeaderLen + method.TagSize
+	startBuf := internal.GetBytes(method.SaltSize + encFixedLen)
+	defer internal.PutBytes(startBuf)
+	n, err := io.ReadFull(src, startBuf)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
+
+	requestSaltBuf, encFixed := startBuf[:method.SaltSize], startBuf[method.SaltSize:]
 
 	requestCipher, err := NewTCPStreamCipherFromPSK(method, psk, requestSaltBuf)
-	if err != nil {
-		return nil, total, err
-	}
-
-	encFixed := internal.GetBytes(TcpRequestFixedHeaderLen + method.TagSize)
-	defer internal.PutBytes(encFixed)
-	n, err = io.ReadFull(src, encFixed)
-	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
@@ -181,6 +183,16 @@ func ReadTCPRequestStart(src io.Reader, method Method, psk []byte) (*ParsedTCPRe
 	fixedHeader, err := requestCipher.DecodeRequestFixedHeader(encFixed, fixedPlainScratch[:0])
 	if err != nil {
 		return nil, total, err
+	}
+
+	if err := ValidateTimestamp(fixedHeader.Timestamp, now); err != nil {
+		return nil, total, err
+	}
+
+	// Salts are only stored once the message is known to be authentic and fresh,
+	// so unauthenticated traffic cannot fill the cache.
+	if replay != nil && replay.SeenOrAdd(requestSaltBuf, now, ReplayWindowDuration) {
+		return nil, total, ErrReplayDetected
 	}
 
 	encVariable := internal.GetBytes(int(fixedHeader.Length) + method.TagSize)
@@ -249,7 +261,11 @@ func WriteTCPResponseStart(dst io.Writer, method Method, psk, responseSalt []byt
 }
 
 // ReadTCPResponseStart reads and decrypts a full server response startup.
-func ReadTCPResponseStart(src io.Reader, method Method, psk, expectedRequestSalt []byte) (*ParsedTCPResponseStart, int64, error) {
+//
+// The salt and the fixed-length header are consumed with a single read call, as
+// required for detection prevention. The header timestamp is checked against now,
+// and its echoed request salt against expectedRequestSalt.
+func ReadTCPResponseStart(src io.Reader, method Method, psk, expectedRequestSalt []byte, now time.Time) (*ParsedTCPResponseStart, int64, error) {
 	var total int64
 	if err := method.Validate(); err != nil {
 		return nil, 0, err
@@ -261,32 +277,32 @@ func ReadTCPResponseStart(src io.Reader, method Method, psk, expectedRequestSalt
 		return nil, 0, fmt.Errorf("invalid request salt length: got %d, want %d", len(expectedRequestSalt), method.SaltSize)
 	}
 
-	responseSaltBuf := internal.GetBytes(method.SaltSize)
-	defer internal.PutBytes(responseSaltBuf)
-	n, err := io.ReadFull(src, responseSaltBuf)
+	// The salt and the fixed-length header must be read in one call so that the
+	// number of bytes consumed never depends on how far validation got.
+	plainHeaderLen := TcpResponseFixedBaseLen + method.SaltSize
+	startBuf := internal.GetBytes(method.SaltSize + plainHeaderLen + method.TagSize)
+	defer internal.PutBytes(startBuf)
+	n, err := io.ReadFull(src, startBuf)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
+
+	responseSaltBuf, encHeader := startBuf[:method.SaltSize], startBuf[method.SaltSize:]
 
 	responseCipher, err := NewTCPStreamCipherFromPSK(method, psk, responseSaltBuf)
 	if err != nil {
 		return nil, total, err
 	}
 
-	encHeaderLen := 1 + 8 + method.SaltSize + 2 + method.TagSize
-	encHeader := internal.GetBytes(encHeaderLen)
-	defer internal.PutBytes(encHeader)
-	n, err = io.ReadFull(src, encHeader)
-	total += int64(n)
+	plainHeaderScratch := internal.GetBytes(plainHeaderLen)
+	defer internal.PutBytes(plainHeaderScratch)
+	header, err := responseCipher.DecodeResponseHeader(encHeader, plainHeaderScratch[:0])
 	if err != nil {
 		return nil, total, err
 	}
 
-	plainHeaderScratch := internal.GetBytes(1 + 8 + method.SaltSize + 2)
-	defer internal.PutBytes(plainHeaderScratch)
-	header, err := responseCipher.DecodeResponseHeader(encHeader, plainHeaderScratch[:0])
-	if err != nil {
+	if err := ValidateTimestamp(header.Timestamp, now); err != nil {
 		return nil, total, err
 	}
 
