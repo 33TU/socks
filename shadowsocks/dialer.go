@@ -2,9 +2,11 @@ package shadowsocks
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/33TU/socks/internal"
@@ -38,7 +40,10 @@ func NewDialer(proxyAddr string, cfg *Config, dialer socksnet.Dialer) *Dialer {
 // NewDialerFromURL creates a new Dialer from a URL of the form
 // ss://method:psk@host:port[/?plugin=...][#tag]
 //
-// For AEAD-2022, userinfo must be plain method:psk and not legacy base64-wrapped userinfo.
+// Both spellings of the userinfo are accepted. AEAD-2022 links usually carry
+// method:psk directly, while SIP002 defines the userinfo as
+// websafe-base64(method:psk), which is what most subscription links and QR
+// codes emit.
 func NewDialerFromURL(u *url.URL, dialer socksnet.Dialer) (*Dialer, error) {
 	if u == nil {
 		return nil, fmt.Errorf("nil proxy URL")
@@ -62,18 +67,9 @@ func NewDialerFromURL(u *url.URL, dialer socksnet.Dialer) (*Dialer, error) {
 
 	proxyAddr := net.JoinHostPort(host, port)
 
-	if u.User == nil {
-		return nil, fmt.Errorf("missing method/psk in proxy URL")
-	}
-
-	method := u.User.Username()
-	if method == "" {
-		return nil, fmt.Errorf("missing method in proxy URL")
-	}
-
-	psk, hasPassword := u.User.Password()
-	if !hasPassword {
-		return nil, fmt.Errorf("missing PSK in proxy URL")
+	method, psk, err := parseURLUserInfo(u.User)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg := &Config{
@@ -92,13 +88,78 @@ func NewDialerFromURL(u *url.URL, dialer socksnet.Dialer) (*Dialer, error) {
 // NewDialerFromURLString creates a new Dialer from a URL string of the form
 // ss://method:psk@host:port[/?plugin=...][#tag]
 //
-// For AEAD-2022, userinfo must be plain method:psk and not legacy base64-wrapped userinfo.
+// Both plain and SIP002 base64 userinfo are accepted.
 func NewDialerFromURLString(rawURL string, dialer socksnet.Dialer) (*Dialer, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid proxy URL: %w", err)
 	}
 	return NewDialerFromURL(u, dialer)
+}
+
+// parseURLUserInfo extracts the method and PSK from an ss:// URL's userinfo.
+//
+// A userinfo carrying a password is read as plain method:psk. One without is
+// read as SIP002's websafe-base64(method:psk); the base64 spelling varies
+// between emitters, so the URL-safe and standard alphabets are both accepted,
+// padded or not.
+func parseURLUserInfo(user *url.Userinfo) (method, psk string, err error) {
+	if user == nil {
+		return "", "", fmt.Errorf("missing method/psk in proxy URL")
+	}
+
+	if psk, ok := user.Password(); ok {
+		method := user.Username()
+		if method == "" {
+			return "", "", fmt.Errorf("missing method in proxy URL")
+		}
+		if psk == "" {
+			return "", "", fmt.Errorf("missing PSK in proxy URL")
+		}
+		return method, psk, nil
+	}
+
+	encoded := user.Username()
+	if encoded == "" {
+		return "", "", fmt.Errorf("missing method/psk in proxy URL")
+	}
+
+	// A bare method name is the plain form with its PSK left off. Saying so
+	// beats complaining that it is not valid base64, which it may well be.
+	if IsSupportedMethod(encoded) {
+		return "", "", fmt.Errorf("missing PSK in proxy URL")
+	}
+
+	decoded, err := decodeURLUserInfo(encoded)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid proxy URL userinfo: %w", err)
+	}
+
+	// The PSK is base64 and cannot contain a colon, so the first one separates
+	// the method. Anything after it is the PSK, which for multi-user setups is
+	// itself a colon-separated list.
+	method, psk, ok := strings.Cut(decoded, ":")
+	if !ok || method == "" || psk == "" {
+		return "", "", fmt.Errorf("invalid proxy URL userinfo: want method:psk")
+	}
+
+	return method, psk, nil
+}
+
+// decodeURLUserInfo decodes the base64 spellings found in the wild.
+func decodeURLUserInfo(s string) (string, error) {
+	for _, enc := range []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	} {
+		if decoded, err := enc.DecodeString(s); err == nil {
+			return string(decoded), nil
+		}
+	}
+
+	return "", fmt.Errorf("not base64")
 }
 
 // ProxyAddress returns the configured Shadowsocks proxy address.

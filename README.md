@@ -473,6 +473,7 @@ server. Because `shadowsocks.Dialer` satisfies the dialer interface the SOCKS5
 server takes, that is just a matter of wiring the two together:
 
 ```go
+// Both plain method:psk and SIP002 base64 userinfo are accepted.
 dialer, err := shadowsocks.NewDialerFromURLString("ss://...", nil)
 if err != nil {
 	log.Fatal(err)
