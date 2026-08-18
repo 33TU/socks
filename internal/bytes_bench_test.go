@@ -11,8 +11,7 @@ func BenchmarkBytesPool(b *testing.B) {
 			b.ResetTimer()
 
 			for range b.N {
-				buf := GetBytes(size)
-				PutBytes(buf)
+				PutBuffer(GetBuffer(size))
 			}
 		})
 	}
@@ -32,22 +31,29 @@ func sizeLabel(n int) string {
 }
 
 // TestPutBytesEdgeCases guards the sizes that have no pool class of their own.
-func TestPutBytesEdgeCases(t *testing.T) {
-	PutBytes(nil)
-	PutBytes([]byte{})
-	PutBytes(make([]byte, 0, 0))
+func TestPutBufferEdgeCases(t *testing.T) {
+	PutBuffer(nil)
+	PutBuffer(&Buffer{})
+	PutBuffer(&Buffer{B: []byte{}})
 
-	// An appended buffer has a capacity that is not a power of two.
-	grown := append(make([]byte, 0, 8), make([]byte, 100)...)
-	PutBytes(grown)
+	// An appended buffer has a capacity that is not a power of two, so it goes
+	// back to the largest class it fully covers.
+	PutBuffer(&Buffer{B: append(make([]byte, 0, 8), make([]byte, 100)...)})
 
-	// A buffer larger than the largest class is dropped rather than pooled.
-	PutBytes(make([]byte, 16))
-
-	if got := GetBytes(0); got != nil {
-		t.Errorf("GetBytes(0) = %v, want nil", got)
+	if got := GetBuffer(0); len(got.B) != 0 {
+		t.Errorf("GetBuffer(0) length = %d, want 0", len(got.B))
 	}
-	if got := GetBytes(100); len(got) != 100 || cap(got) < 100 {
-		t.Errorf("GetBytes(100) = len %d cap %d, want at least 100", len(got), cap(got))
+	if got := GetBuffer(100); len(got.B) != 100 || cap(got.B) < 100 {
+		t.Errorf("GetBuffer(100) = len %d cap %d, want at least 100", len(got.B), cap(got.B))
+	}
+
+	// A buffer that grew past its class comes back at the larger class, and is
+	// still usable afterwards.
+	buf := GetBuffer(64)
+	buf.B = append(buf.B, make([]byte, 4000)...)
+	PutBuffer(buf)
+
+	if reused := GetBuffer(4096); len(reused.B) != 4096 {
+		t.Errorf("GetBuffer(4096) length = %d, want 4096", len(reused.B))
 	}
 }

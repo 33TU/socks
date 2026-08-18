@@ -148,8 +148,8 @@ func WriteTCPRequestStart(dst io.Writer, keys ClientKeys, requestSalt []byte, ti
 	if variableHeader.EncodedLen() > scratchLen {
 		scratchLen = variableHeader.EncodedLen()
 	}
-	plainScratch := internal.GetBytes(scratchLen)
-	defer internal.PutBytes(plainScratch)
+	plainScratch := internal.GetBuffer(scratchLen)
+	defer internal.PutBuffer(plainScratch)
 
 	var stackBuf [tcpRequestStartStackBufSize]byte
 	out := stackBuf[:0]
@@ -161,11 +161,11 @@ func WriteTCPRequestStart(dst io.Writer, keys ClientKeys, requestSalt []byte, ti
 		return nil, 0, err
 	}
 
-	out, err = requestCipher.EncodeRequestFixedHeaderTo(out, &fixedHeader, plainScratch[:0])
+	out, err = requestCipher.EncodeRequestFixedHeaderTo(out, &fixedHeader, plainScratch.B[:0])
 	if err != nil {
 		return nil, 0, err
 	}
-	out, err = requestCipher.EncodeRequestVariableHeaderTo(out, &variableHeader, plainScratch[:0])
+	out, err = requestCipher.EncodeRequestVariableHeaderTo(out, &variableHeader, plainScratch.B[:0])
 	if err != nil {
 		return nil, 0, err
 	}
@@ -198,17 +198,17 @@ func ReadTCPRequestStart(src io.Reader, cipher *ServerCipher, now time.Time) (*P
 	// The salt and the fixed-length header must be read in one call so that the
 	// number of bytes consumed never depends on how far validation got.
 	encFixedLen := TCPRequestFixedHeaderLen + method.TagSize
-	startBuf := internal.GetBytes(method.SaltSize + identityLen + encFixedLen)
-	defer internal.PutBytes(startBuf)
-	n, err := io.ReadFull(src, startBuf)
+	startBuf := internal.GetBuffer(method.SaltSize + identityLen + encFixedLen)
+	defer internal.PutBuffer(startBuf)
+	n, err := io.ReadFull(src, startBuf.B)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
 
-	requestSaltBuf := startBuf[:method.SaltSize]
-	identityHeader := startBuf[method.SaltSize : method.SaltSize+identityLen]
-	encFixed := startBuf[method.SaltSize+identityLen:]
+	requestSaltBuf := startBuf.B[:method.SaltSize]
+	identityHeader := startBuf.B[method.SaltSize : method.SaltSize+identityLen]
+	encFixed := startBuf.B[method.SaltSize+identityLen:]
 
 	psk, user, err := cipher.SessionPSK(identityHeader, requestSaltBuf)
 	if err != nil {
@@ -220,9 +220,9 @@ func ReadTCPRequestStart(src io.Reader, cipher *ServerCipher, now time.Time) (*P
 		return nil, total, err
 	}
 
-	fixedPlainScratch := internal.GetBytes(TCPRequestFixedHeaderLen)
-	defer internal.PutBytes(fixedPlainScratch)
-	fixedHeader, err := requestCipher.DecodeRequestFixedHeader(encFixed, fixedPlainScratch[:0])
+	fixedPlainScratch := internal.GetBuffer(TCPRequestFixedHeaderLen)
+	defer internal.PutBuffer(fixedPlainScratch)
+	fixedHeader, err := requestCipher.DecodeRequestFixedHeader(encFixed, fixedPlainScratch.B[:0])
 	if err != nil {
 		return nil, total, err
 	}
@@ -237,17 +237,17 @@ func ReadTCPRequestStart(src io.Reader, cipher *ServerCipher, now time.Time) (*P
 		return nil, total, ErrReplayDetected
 	}
 
-	encVariable := internal.GetBytes(int(fixedHeader.Length) + method.TagSize)
-	defer internal.PutBytes(encVariable)
-	n, err = io.ReadFull(src, encVariable)
+	encVariable := internal.GetBuffer(int(fixedHeader.Length) + method.TagSize)
+	defer internal.PutBuffer(encVariable)
+	n, err = io.ReadFull(src, encVariable.B)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
 
-	variablePlainScratch := internal.GetBytes(int(fixedHeader.Length))
-	defer internal.PutBytes(variablePlainScratch)
-	variableHeader, err := requestCipher.DecodeRequestVariableHeader(encVariable, variablePlainScratch[:0])
+	variablePlainScratch := internal.GetBuffer(int(fixedHeader.Length))
+	defer internal.PutBuffer(variablePlainScratch)
+	variableHeader, err := requestCipher.DecodeRequestVariableHeader(encVariable.B, variablePlainScratch.B[:0])
 	if err != nil {
 		return nil, total, err
 	}
@@ -284,13 +284,13 @@ func WriteTCPResponseStart(dst io.Writer, method Method, psk, responseSalt []byt
 		return nil, 0, err
 	}
 
-	headerPlainScratch := internal.GetBytes(header.EncodedLen())
-	defer internal.PutBytes(headerPlainScratch)
+	headerPlainScratch := internal.GetBuffer(header.EncodedLen())
+	defer internal.PutBuffer(headerPlainScratch)
 
 	var stackBuf [tcpResponseStartStackBufSize]byte
 	out := stackBuf[:0]
 	out = append(out, responseSalt...)
-	out, err = responseCipher.EncodeResponseHeaderTo(out, &header, headerPlainScratch[:0])
+	out, err = responseCipher.EncodeResponseHeaderTo(out, &header, headerPlainScratch.B[:0])
 	if err != nil {
 		return nil, 0, err
 	}
@@ -323,24 +323,24 @@ func ReadTCPResponseStart(src io.Reader, method Method, psk, expectedRequestSalt
 	// The salt and the fixed-length header must be read in one call so that the
 	// number of bytes consumed never depends on how far validation got.
 	plainHeaderLen := TCPResponseFixedBaseLen + method.SaltSize
-	startBuf := internal.GetBytes(method.SaltSize + plainHeaderLen + method.TagSize)
-	defer internal.PutBytes(startBuf)
-	n, err := io.ReadFull(src, startBuf)
+	startBuf := internal.GetBuffer(method.SaltSize + plainHeaderLen + method.TagSize)
+	defer internal.PutBuffer(startBuf)
+	n, err := io.ReadFull(src, startBuf.B)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
 
-	responseSaltBuf, encHeader := startBuf[:method.SaltSize], startBuf[method.SaltSize:]
+	responseSaltBuf, encHeader := startBuf.B[:method.SaltSize], startBuf.B[method.SaltSize:]
 
 	responseCipher, err := NewTCPStreamCipherFromPSK(method, psk, responseSaltBuf)
 	if err != nil {
 		return nil, total, err
 	}
 
-	plainHeaderScratch := internal.GetBytes(plainHeaderLen)
-	defer internal.PutBytes(plainHeaderScratch)
-	header, err := responseCipher.DecodeResponseHeader(encHeader, plainHeaderScratch[:0])
+	plainHeaderScratch := internal.GetBuffer(plainHeaderLen)
+	defer internal.PutBuffer(plainHeaderScratch)
+	header, err := responseCipher.DecodeResponseHeader(encHeader, plainHeaderScratch.B[:0])
 	if err != nil {
 		return nil, total, err
 	}
@@ -349,17 +349,17 @@ func ReadTCPResponseStart(src io.Reader, method Method, psk, expectedRequestSalt
 		return nil, total, err
 	}
 
-	encPayloadBuf := internal.GetBytes(responseCipher.EncryptedPayloadLength(int(header.Length)))
-	defer internal.PutBytes(encPayloadBuf)
-	n, err = io.ReadFull(src, encPayloadBuf)
+	encPayloadBuf := internal.GetBuffer(responseCipher.EncryptedPayloadLength(int(header.Length)))
+	defer internal.PutBuffer(encPayloadBuf)
+	n, err = io.ReadFull(src, encPayloadBuf.B)
 	total += int64(n)
 	if err != nil {
 		return nil, total, err
 	}
 
-	payloadScratch := internal.GetBytes(int(header.Length))
-	defer internal.PutBytes(payloadScratch)
-	initialPayload, err := responseCipher.DecodeChunkPayloadTo(payloadScratch[:0], encPayloadBuf)
+	payloadScratch := internal.GetBuffer(int(header.Length))
+	defer internal.PutBuffer(payloadScratch)
+	initialPayload, err := responseCipher.DecodeChunkPayloadTo(payloadScratch.B[:0], encPayloadBuf.B)
 	if err != nil {
 		return nil, total, err
 	}

@@ -147,27 +147,29 @@ func (c *UDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		return 0, err
 	}
 
-	padding := internal.GetBytes(paddingLen)
-	defer internal.PutBytes(padding)
-	if err := FillRandomBytes(padding); err != nil {
+	paddingBuf := internal.GetBuffer(paddingLen)
+	defer internal.PutBuffer(paddingBuf)
+	if err := FillRandomBytes(paddingBuf.B); err != nil {
 		return 0, err
 	}
 
 	var header UDPClientHeader
-	header.Init(UDPHeaderTypeClientPacket, uint64(time.Now().Unix()), padding, target)
+	header.Init(UDPHeaderTypeClientPacket, uint64(time.Now().Unix()), paddingBuf.B, target)
 
-	body := internal.GetBytes(header.EncodedLen() + len(p))[:0]
-	defer internal.PutBytes(body)
+	bodyBuf := internal.GetBuffer(header.EncodedLen() + len(p))
+	defer internal.PutBuffer(bodyBuf)
 
-	if body, err = header.EncodeTo(body); err != nil {
+	body, err := header.EncodeTo(bodyBuf.B[:0])
+	if err != nil {
 		return 0, err
 	}
 	body = append(body, p...)
 
-	packet := internal.GetBytes(c.cipher.PacketOverhead() + len(c.identityPSKs)*IdentityHeaderLen + len(body))[:0]
-	defer internal.PutBytes(packet)
+	packetBuf := internal.GetBuffer(c.cipher.PacketOverhead() + len(c.identityPSKs)*IdentityHeaderLen + len(body))
+	defer internal.PutBuffer(packetBuf)
 
-	if packet, err = c.session.SealToWithIdentity(packet, c.packetID.Add(1)-1, body, c.identityPSKs); err != nil {
+	packet, err := c.session.SealToWithIdentity(packetBuf.B[:0], c.packetID.Add(1)-1, body, c.identityPSKs)
+	if err != nil {
 		return 0, err
 	}
 
@@ -193,19 +195,19 @@ func (c *UDPConn) WriteToDomain(p []byte, domain string, port uint16) (int, erro
 // Packets that fail to decrypt or validate are dropped, and reading continues,
 // since anyone can send a datagram to an open socket.
 func (c *UDPConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	buf := internal.GetBytes(c.bufferSize)
-	defer internal.PutBytes(buf)
+	buf := internal.GetBuffer(c.bufferSize)
+	defer internal.PutBuffer(buf)
 
-	plain := internal.GetBytes(c.bufferSize)
-	defer internal.PutBytes(plain)
+	plain := internal.GetBuffer(c.bufferSize)
+	defer internal.PutBuffer(plain)
 
 	for {
-		n, _, err := c.conn.ReadFrom(buf)
+		n, _, err := c.conn.ReadFrom(buf.B)
 		if err != nil {
 			return 0, nil, err
 		}
 
-		payload, source, ok := c.unpack(plain[:0], buf[:n], time.Now())
+		payload, source, ok := c.unpack(plain.B[:0], buf.B[:n], time.Now())
 		if !ok {
 			continue
 		}

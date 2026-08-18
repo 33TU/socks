@@ -205,9 +205,9 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 		conn.Close()
 		return nil, err
 	}
-	defer internal.PutBytes(padding)
+	defer internal.PutBuffer(padding)
 
-	ssConn, err := NewClientTCPConn(conn, keys, target, padding, nil)
+	ssConn, err := NewClientTCPConn(conn, keys, target, padding.B, nil)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -300,7 +300,7 @@ func (d *Dialer) clientKeys() (ClientKeys, error) {
 
 // buildPadding returns random padding for a request header according to the
 // dialer's padding policy. The returned slice comes from the byte pool.
-func (d *Dialer) buildPadding(target Addr, payloadLen int) ([]byte, error) {
+func (d *Dialer) buildPadding(target Addr, payloadLen int) (*internal.Buffer, error) {
 	policy := d.Padding
 	if policy == nil {
 		policy = PadWhenEmpty(MaxPaddingLength)
@@ -310,13 +310,10 @@ func (d *Dialer) buildPadding(target Addr, payloadLen int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if paddingLen == 0 {
-		return nil, nil
-	}
 
-	padding := internal.GetBytes(paddingLen)
-	if err := FillRandomBytes(padding); err != nil {
-		internal.PutBytes(padding)
+	padding := internal.GetBuffer(paddingLen)
+	if err := FillRandomBytes(padding.B); err != nil {
+		internal.PutBuffer(padding)
 		return nil, err
 	}
 

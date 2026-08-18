@@ -157,14 +157,14 @@ func ServePacket(ctx context.Context, pc net.PacketConn, handler UDPServerHandle
 
 	go relay.purgeSessions(ctx)
 
-	buf := internal.GetBytes(relay.options.BufferSize)
-	defer internal.PutBytes(buf)
+	buf := internal.GetBuffer(relay.options.BufferSize)
+	defer internal.PutBuffer(buf)
 
-	plain := internal.GetBytes(relay.options.BufferSize)
-	defer internal.PutBytes(plain)
+	plain := internal.GetBuffer(relay.options.BufferSize)
+	defer internal.PutBuffer(plain)
 
 	for {
-		n, from, err := pc.ReadFrom(buf)
+		n, from, err := pc.ReadFrom(buf.B)
 		if err != nil {
 			select {
 			case <-ctx.Done():
@@ -174,7 +174,7 @@ func ServePacket(ctx context.Context, pc net.PacketConn, handler UDPServerHandle
 			}
 		}
 
-		if err := relay.handlePacket(ctx, pc, plain[:0], buf[:n], from); err != nil {
+		if err := relay.handlePacket(ctx, pc, plain.B[:0], buf.B[:n], from); err != nil {
 			handler.OnError(ctx, err)
 		}
 	}
@@ -565,8 +565,8 @@ func (r *udpRelay) relayFromTarget(ctx context.Context, pc net.PacketConn, sessi
 
 	timeout := r.options.SessionTimeout
 
-	buf := internal.GetBytes(r.options.BufferSize)
-	defer internal.PutBytes(buf)
+	buf := internal.GetBuffer(r.options.BufferSize)
+	defer internal.PutBuffer(buf)
 
 	for {
 		select {
@@ -590,7 +590,7 @@ func (r *udpRelay) relayFromTarget(ctx context.Context, pc net.PacketConn, sessi
 			return
 		}
 
-		n, src, err := session.out.ReadFromUDP(buf)
+		n, src, err := session.out.ReadFromUDP(buf.B)
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				// The target has gone quiet; the client may not have.
@@ -607,7 +607,7 @@ func (r *udpRelay) relayFromTarget(ctx context.Context, pc net.PacketConn, sessi
 			continue
 		}
 
-		if err := session.writeToClient(pc, clientAddr, r.options.Padding, src, buf[:n]); err != nil {
+		if err := session.writeToClient(pc, clientAddr, r.options.Padding, src, buf.B[:n]); err != nil {
 			r.handler.OnError(ctx, fmt.Errorf("replying to %s: %w", clientAddr, err))
 			continue
 		}
@@ -713,27 +713,29 @@ func (s *UDPSession) writeToClient(
 		return err
 	}
 
-	paddingBuf := internal.GetBytes(paddingLen)
-	defer internal.PutBytes(paddingBuf)
-	if err := FillRandomBytes(paddingBuf); err != nil {
+	paddingBuf := internal.GetBuffer(paddingLen)
+	defer internal.PutBuffer(paddingBuf)
+	if err := FillRandomBytes(paddingBuf.B); err != nil {
 		return err
 	}
 
 	var header UDPServerHeader
-	header.Init(UDPHeaderTypeServerPacket, uint64(time.Now().Unix()), s.clientSessionID, paddingBuf, source)
+	header.Init(UDPHeaderTypeServerPacket, uint64(time.Now().Unix()), s.clientSessionID, paddingBuf.B, source)
 
-	body := internal.GetBytes(header.EncodedLen() + len(payload))[:0]
-	defer internal.PutBytes(body)
+	bodyBuf := internal.GetBuffer(header.EncodedLen() + len(payload))
+	defer internal.PutBuffer(bodyBuf)
 
-	if body, err = header.EncodeTo(body); err != nil {
+	body, err := header.EncodeTo(bodyBuf.B[:0])
+	if err != nil {
 		return err
 	}
 	body = append(body, payload...)
 
-	packet := internal.GetBytes(s.serverCipher.cipher.PacketOverhead() + len(body))[:0]
-	defer internal.PutBytes(packet)
+	packetBuf := internal.GetBuffer(s.serverCipher.cipher.PacketOverhead() + len(body))
+	defer internal.PutBuffer(packetBuf)
 
-	if packet, err = s.serverCipher.SealTo(packet, s.serverPacketID.Add(1)-1, body); err != nil {
+	packet, err := s.serverCipher.SealTo(packetBuf.B[:0], s.serverPacketID.Add(1)-1, body)
+	if err != nil {
 		return err
 	}
 

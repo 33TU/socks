@@ -461,8 +461,8 @@ func BaseOnUDPAssociate(ctx context.Context, conn net.Conn, req *Request, opts U
 
 	// Client -> remote
 	g.Go(func() error {
-		buf := internal.GetBytes(bufferSize)
-		defer internal.PutBytes(buf)
+		buf := internal.GetBuffer(bufferSize)
+		defer internal.PutBuffer(buf)
 
 		for {
 			select {
@@ -477,7 +477,7 @@ func BaseOnUDPAssociate(ctx context.Context, conn net.Conn, req *Request, opts U
 				}
 			}
 
-			n, srcAddr, err := relayConn.ReadFromUDP(buf)
+			n, srcAddr, err := relayConn.ReadFromUDP(buf.B)
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					return nil
@@ -486,7 +486,7 @@ func BaseOnUDPAssociate(ctx context.Context, conn net.Conn, req *Request, opts U
 			}
 
 			var pkt UDPPacket
-			if _, err := pkt.UnmarshalFrom(buf[:n]); err != nil {
+			if _, err := pkt.UnmarshalFrom(buf.B[:n]); err != nil {
 				continue
 			}
 
@@ -540,11 +540,11 @@ func BaseOnUDPAssociate(ctx context.Context, conn net.Conn, req *Request, opts U
 
 	// Remote -> client
 	g.Go(func() error {
-		inBuf := internal.GetBytes(bufferSize)
-		defer internal.PutBytes(inBuf)
+		inBuf := internal.GetBuffer(bufferSize)
+		defer internal.PutBuffer(inBuf)
 
-		outBuf := internal.GetBytes(bufferSize)
-		defer internal.PutBytes(outBuf)
+		outBuf := internal.GetBuffer(bufferSize)
+		defer internal.PutBuffer(outBuf)
 
 		for {
 			select {
@@ -559,7 +559,7 @@ func BaseOnUDPAssociate(ctx context.Context, conn net.Conn, req *Request, opts U
 				}
 			}
 
-			n, srcAddr, err := outConn.ReadFrom(inBuf)
+			n, srcAddr, err := outConn.ReadFrom(inBuf.B)
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					return nil
@@ -585,15 +585,15 @@ func BaseOnUDPAssociate(ctx context.Context, conn net.Conn, req *Request, opts U
 				ip,
 				domain,
 				port,
-				inBuf[:n],
+				inBuf.B[:n],
 			)
 
-			nOut, err := resp.MarshalTo(outBuf)
+			nOut, err := resp.MarshalTo(outBuf.B)
 			if err != nil {
 				continue
 			}
 
-			if _, err := relayConn.WriteToUDP(outBuf[:nOut], locked); err != nil {
+			if _, err := relayConn.WriteToUDP(outBuf.B[:nOut], locked); err != nil {
 				continue
 			}
 		}

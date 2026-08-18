@@ -48,15 +48,15 @@ func CopyConn(dst, src net.Conn, timeout time.Duration, bufSize int) error {
 		bufSize = 1024 * 32 // default buffer size for io.CopyBuffer
 	}
 
-	buf := internal.GetBytes(bufSize)
-	defer internal.PutBytes(buf)
+	buf := internal.GetBuffer(bufSize)
+	defer internal.PutBuffer(buf)
 
 	for {
 		if err := src.SetDeadline(time.Now().Add(timeout)); err != nil {
 			return err
 		}
 
-		n, err := src.Read(buf)
+		n, err := src.Read(buf.B)
 		if err == io.EOF {
 			return nil
 		}
@@ -64,7 +64,7 @@ func CopyConn(dst, src net.Conn, timeout time.Duration, bufSize int) error {
 			return err
 		}
 
-		if _, err := dst.Write(buf[:n]); err != nil {
+		if _, err := dst.Write(buf.B[:n]); err != nil {
 			return err
 		}
 	}

@@ -151,14 +151,14 @@ func (c *UDPCipher) NewSession(sessionID uint64) (*UDPSessionCipher, error) {
 	var salt [UDPSessionIDLen]byte
 	binary.BigEndian.PutUint64(salt[:], sessionID)
 
-	subkey := internal.GetBytes(c.Method.KeySize)
-	defer internal.PutBytes(subkey)
+	subkey := internal.GetBuffer(c.Method.KeySize)
+	defer internal.PutBuffer(subkey)
 
-	if err := deriveSubkeyTo(subkey, c.Method, c.psk, salt[:]); err != nil {
+	if err := deriveSubkeyTo(subkey.B, c.Method, c.psk, salt[:]); err != nil {
 		return nil, err
 	}
 
-	aead, err := c.Method.NewAEAD(subkey)
+	aead, err := c.Method.NewAEAD(subkey.B)
 	if err != nil {
 		return nil, err
 	}
@@ -241,13 +241,13 @@ func (s *UDPSessionCipher) SealTo(dst []byte, packetID uint64, body []byte) ([]b
 			return nil, err
 		}
 
-		plaintext := internal.GetBytes(UDPSeparateHeaderLen + len(body))
-		defer internal.PutBytes(plaintext)
-		copy(plaintext, separate[:])
-		copy(plaintext[UDPSeparateHeaderLen:], body)
+		plaintext := internal.GetBuffer(UDPSeparateHeaderLen + len(body))
+		defer internal.PutBuffer(plaintext)
+		copy(plaintext.B, separate[:])
+		copy(plaintext.B[UDPSeparateHeaderLen:], body)
 
 		dst = append(dst, nonce[:]...)
-		return s.aead.Seal(dst, nonce[:], plaintext, nil), nil
+		return s.aead.Seal(dst, nonce[:], plaintext.B, nil), nil
 	}
 
 	// The nonce comes from the plaintext separate header, which is block

@@ -78,7 +78,7 @@ type AsyncUDPWriterConfig struct {
 }
 
 type udpWriteItem struct {
-	payload []byte // from the byte pool, released once sent
+	payload *internal.Buffer // from the byte pool, released once sent
 	domain  string
 	port    uint16
 }
@@ -154,12 +154,12 @@ func (w *AsyncUDPWriter) WriteToDomain(payload []byte, domain string, port uint1
 
 	// The caller reuses its read buffer, so the payload has to be copied to
 	// outlive this call.
-	buf := internal.GetBytes(len(payload))
-	copy(buf, payload)
+	buf := internal.GetBuffer(len(payload))
+	copy(buf.B, payload)
 
 	select {
 	case <-w.done:
-		internal.PutBytes(buf)
+		internal.PutBuffer(buf)
 		return false
 	default:
 	}
@@ -168,7 +168,7 @@ func (w *AsyncUDPWriter) WriteToDomain(payload []byte, domain string, port uint1
 	case w.queue <- udpWriteItem{payload: buf, domain: domain, port: port}:
 		return true
 	default:
-		internal.PutBytes(buf)
+		internal.PutBuffer(buf)
 		return false
 	}
 }
@@ -184,7 +184,7 @@ func (w *AsyncUDPWriter) Close() error {
 		for {
 			select {
 			case item := <-w.queue:
-				internal.PutBytes(item.payload)
+				internal.PutBuffer(item.payload)
 			default:
 				return
 			}
@@ -207,20 +207,20 @@ func (w *AsyncUDPWriter) work() {
 			// closing is checked again here rather than draining the queue.
 			select {
 			case <-w.done:
-				internal.PutBytes(item.payload)
+				internal.PutBuffer(item.payload)
 				return
 			default:
 			}
 
 			ip, err := w.resolve(item.domain)
 			if err != nil {
-				internal.PutBytes(item.payload)
+				internal.PutBuffer(item.payload)
 				w.reportError(err)
 				continue
 			}
 
-			w.send(item.payload, &net.UDPAddr{IP: ip, Port: int(item.port)})
-			internal.PutBytes(item.payload)
+			w.send(item.payload.B, &net.UDPAddr{IP: ip, Port: int(item.port)})
+			internal.PutBuffer(item.payload)
 		}
 	}
 }

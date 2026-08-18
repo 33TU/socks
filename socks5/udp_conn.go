@@ -63,20 +63,20 @@ func (c *UDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		Data:     p,
 	}
 
-	buf := internal.GetBytes(pkt.Size())
-	defer internal.PutBytes(buf)
+	buf := internal.GetBuffer(pkt.Size())
+	defer internal.PutBuffer(buf)
 
-	n, err := pkt.MarshalTo(buf)
+	n, err := pkt.MarshalTo(buf.B)
 	if err != nil {
 		return 0, err
 	}
 
 	if c.udpConn.RemoteAddr() != nil {
 		// connected socket
-		_, err = c.udpConn.Write(buf[:n])
+		_, err = c.udpConn.Write(buf.B[:n])
 	} else {
 		// unconnected socket
-		_, err = c.udpConn.WriteToUDP(buf[:n], c.relayAddr)
+		_, err = c.udpConn.WriteToUDP(buf.B[:n], c.relayAddr)
 	}
 
 	if err != nil {
