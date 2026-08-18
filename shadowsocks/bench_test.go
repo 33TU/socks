@@ -287,3 +287,56 @@ func sizeName(n int) string {
 	}
 	return fmt.Sprintf("%dB", n)
 }
+
+// BenchmarkUDPOpenPacketTo measures the server's receive path: peek the
+// separate header to route the packet, then open the body.
+func BenchmarkUDPOpenPacketTo(b *testing.B) {
+	method, psk := benchMethod(b)
+
+	cipher, err := shadowsocks.NewUDPCipher(method, psk)
+	if err != nil {
+		b.Fatal(err)
+	}
+	session, err := cipher.NewSession(1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	packet, err := session.SealTo(nil, 0, make([]byte, 1400))
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	resolve := func(uint64, uint64) (*shadowsocks.UDPSessionCipher, error) { return session, nil }
+	dst := make([]byte, 0, 4096)
+
+	b.SetBytes(1400)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		if _, err := cipher.OpenPacketTo(dst[:0], packet, resolve); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkUDPPeekSeparateHeader(b *testing.B) {
+	method, psk := benchMethod(b)
+
+	cipher, err := shadowsocks.NewUDPCipher(method, psk)
+	if err != nil {
+		b.Fatal(err)
+	}
+	session, _ := cipher.NewSession(1)
+	packet, _ := session.SealTo(nil, 0, make([]byte, 64))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		if _, _, _, err := cipher.PeekSeparateHeader(packet); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

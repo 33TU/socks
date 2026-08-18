@@ -117,6 +117,17 @@ func (c *UDPCipher) PacketOverhead() int {
 // used to route the packet to a session. It is not available for methods
 // without a separate header, which report ok as false.
 func (c *UDPCipher) PeekSeparateHeader(packet []byte) (sessionID, packetID uint64, ok bool, err error) {
+	var separate [UDPSeparateHeaderLen]byte
+	return c.peekSeparateHeaderTo(separate[:], packet)
+}
+
+// peekSeparateHeaderTo decrypts the separate header into separate, which must
+// be UDPSeparateHeaderLen bytes.
+//
+// Callers on the receive path pass a slice of the buffer they are already
+// decrypting into: a local array here would escape into the block cipher's
+// interface call, costing an allocation on every packet received.
+func (c *UDPCipher) peekSeparateHeaderTo(separate, packet []byte) (sessionID, packetID uint64, ok bool, err error) {
 	if !c.HasSeparateHeader() {
 		return 0, 0, false, nil
 	}
@@ -124,8 +135,7 @@ func (c *UDPCipher) PeekSeparateHeader(packet []byte) (sessionID, packetID uint6
 		return 0, 0, false, ErrShortUDPPacket
 	}
 
-	var separate [UDPSeparateHeaderLen]byte
-	c.block.Decrypt(separate[:], packet[:UDPSeparateHeaderLen])
+	c.block.Decrypt(separate, packet[:UDPSeparateHeaderLen])
 
 	sessionID = binary.BigEndian.Uint64(separate[:UDPSessionIDLen])
 	packetID = binary.BigEndian.Uint64(separate[UDPSessionIDLen:])
@@ -309,19 +319,21 @@ func (s *UDPSessionCipher) OpenTo(dst, packet []byte) (sessionID, packetID uint6
 		return 0, 0, nil, ErrShortUDPPacket
 	}
 
-	var separate [UDPSeparateHeaderLen]byte
-	s.cipher.block.Decrypt(separate[:], packet[:UDPSeparateHeaderLen])
+	start := len(dst)
+	dst = appendZeros(dst, UDPSeparateHeaderLen)
+	separate := dst[start : start+UDPSeparateHeaderLen]
 
-	sessionID = binary.BigEndian.Uint64(separate[:UDPSessionIDLen])
-	packetID = binary.BigEndian.Uint64(separate[UDPSessionIDLen:])
-	nonce := separate[UDPSeparateHeaderLen-AeadNonceSize:]
-
-	body, err = s.aead.Open(dst, nonce, packet[UDPSeparateHeaderLen:], nil)
+	sessionID, packetID, _, err = s.cipher.peekSeparateHeaderTo(separate, packet)
 	if err != nil {
 		return 0, 0, nil, err
 	}
 
-	return sessionID, packetID, body, nil
+	out, err := s.OpenBodyTo(dst, packet[UDPSeparateHeaderLen:], separate)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+
+	return sessionID, packetID, out[start+UDPSeparateHeaderLen:], nil
 }
 
 // OpenBodyTo decrypts a packet body whose separate header has already been
@@ -371,7 +383,14 @@ func (c *UDPCipher) OpenPacketTo(
 	}
 
 	if c.HasSeparateHeader() {
-		sessionID, packetID, _, err := c.PeekSeparateHeader(packet)
+		// The separate header is decrypted once, into the head of dst, and then
+		// reused as the nonce. Peeking and opening separately would decrypt it
+		// twice, and a header of our own would escape into the cipher calls.
+		start := len(dst)
+		dst = appendZeros(dst, UDPSeparateHeaderLen)
+		separate := dst[start : start+UDPSeparateHeaderLen]
+
+		sessionID, packetID, _, err := c.peekSeparateHeaderTo(separate, packet)
 		if err != nil {
 			return UDPUnpacked{}, err
 		}
@@ -384,15 +403,16 @@ func (c *UDPCipher) OpenPacketTo(
 			return UDPUnpacked{}, ErrUDPUnknownSession
 		}
 
-		gotSessionID, gotPacketID, body, err := session.OpenTo(dst, packet)
+		out, err := session.OpenBodyTo(dst, packet[UDPSeparateHeaderLen:], separate)
 		if err != nil {
 			return UDPUnpacked{}, err
 		}
-		if gotSessionID != sessionID {
-			return UDPUnpacked{}, ErrUDPSessionIDMismatch
-		}
 
-		return UDPUnpacked{SessionID: gotSessionID, PacketID: gotPacketID, Body: body}, nil
+		return UDPUnpacked{
+			SessionID: sessionID,
+			PacketID:  packetID,
+			Body:      out[start+UDPSeparateHeaderLen:],
+		}, nil
 	}
 
 	// Without a separate header the packet must be opened before its session is known.

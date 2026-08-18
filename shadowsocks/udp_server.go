@@ -296,17 +296,18 @@ func (r *udpRelay) handleMultiUserPacket(
 		return fmt.Errorf("dropping packet from %s: %w", clientAddr, ErrShortUDPPacket)
 	}
 
-	sessionID, packetID, _, err := r.identity.PeekSeparateHeader(packet)
+	// The separate header is decrypted once, into the head of dst, and then
+	// serves as both the identity header's mask and the body's nonce.
+	start := len(dst)
+	dst = appendZeros(dst, UDPSeparateHeaderLen)
+	separate := dst[start : start+UDPSeparateHeaderLen]
+
+	sessionID, packetID, _, err := r.identity.peekSeparateHeaderTo(separate, packet)
 	if err != nil {
 		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
 	}
 
-	// The identity header masks its hash with the plaintext separate header.
-	var separate [UDPSeparateHeaderLen]byte
-	binary.BigEndian.PutUint64(separate[:UDPSessionIDLen], sessionID)
-	binary.BigEndian.PutUint64(separate[UDPSessionIDLen:], packetID)
-
-	named, err := DecodeUDPIdentityHeader(packet[UDPSeparateHeaderLen:headersLen], r.server.IdentityPSK, separate[:])
+	named, err := DecodeUDPIdentityHeader(packet[UDPSeparateHeaderLen:headersLen], r.server.IdentityPSK, separate)
 	if err != nil {
 		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
 	}
@@ -324,10 +325,11 @@ func (r *udpRelay) handleMultiUserPacket(
 		return fmt.Errorf("dropping packet from %s: %w", clientAddr, ErrUDPReplay)
 	}
 
-	body, err := session.clientCipher.OpenBodyTo(dst, packet[headersLen:], separate[:])
+	out, err := session.clientCipher.OpenBodyTo(dst, packet[headersLen:], separate)
 	if err != nil {
 		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
 	}
+	body := out[start+UDPSeparateHeaderLen:]
 
 	var header UDPClientHeader
 	headerLen, err := header.Decode(body)
