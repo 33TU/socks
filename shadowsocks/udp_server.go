@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/33TU/socks/internal"
+	socksnet "github.com/33TU/socks/net"
 )
 
 // UDPServerOptions are the relay parameters a UDP server handler supplies.
@@ -241,7 +242,15 @@ func (r *udpRelay) handlePacket(ctx context.Context, pc net.PacketConn, dst, pac
 		return fmt.Errorf("dropping packet from %s to %s: %w", from, header.Target.Addr(), err)
 	}
 
-	target, err := r.resolveTarget(ctx, header.Target)
+	// Domains are resolved off this loop, which every session's packets share.
+	if header.Target.AddrType == AddrTypeDomain {
+		if !session.domainWriter.WriteToDomain(payload, header.Target.Domain, header.Target.Port) {
+			return fmt.Errorf("dropping packet from %s to %s: resolver queue full", from, header.Target.Addr())
+		}
+		return nil
+	}
+
+	target, err := r.resolveTarget(header.Target)
 	if err != nil {
 		return fmt.Errorf("resolving target %s: %w", header.Target.Addr(), err)
 	}
@@ -268,6 +277,10 @@ func (r *udpRelay) startSession(ctx context.Context, pc net.PacketConn, session 
 		return fmt.Errorf("handler returned a nil outbound socket")
 	}
 	session.out = out
+	session.domainWriter = socksnet.NewAsyncUDPWriter(out, &socksnet.AsyncUDPWriterConfig{
+		Resolver: r.options.Resolver,
+		OnError:  func(err error) { r.handler.OnError(ctx, err) },
+	})
 
 	// Registered before the relay goroutine starts: the goroutine removes
 	// itself on exit, and would otherwise race ahead of its own entry.
@@ -449,22 +462,14 @@ func (r *udpRelay) relayFromTarget(ctx context.Context, pc net.PacketConn, sessi
 	}
 }
 
-// resolveTarget converts a target address from a packet header into a UDP address.
-func (r *udpRelay) resolveTarget(ctx context.Context, target Addr) (*net.UDPAddr, error) {
+// resolveTarget converts a numeric target address into a UDP address.
+//
+// Domain targets go through the session's AsyncUDPWriter instead, so that
+// resolution never happens on the relay's read loop.
+func (r *udpRelay) resolveTarget(target Addr) (*net.UDPAddr, error) {
 	switch target.AddrType {
 	case AddrTypeIPv4, AddrTypeIPv6:
 		return &net.UDPAddr{IP: target.IP, Port: int(target.Port)}, nil
-
-	case AddrTypeDomain:
-		ips, err := r.options.Resolver.LookupIP(ctx, "ip", target.Domain)
-		if err != nil {
-			return nil, err
-		}
-		if len(ips) == 0 {
-			return nil, fmt.Errorf("no addresses for %s", target.Domain)
-		}
-
-		return &net.UDPAddr{IP: ips[0], Port: int(target.Port)}, nil
 
 	default:
 		return nil, ErrInvalidAddrType
@@ -481,6 +486,10 @@ type UDPSession struct {
 	serverPacketID  atomic.Uint64
 
 	out *net.UDPConn
+
+	// domainWriter resolves and sends to domain targets away from the relay's
+	// read loop.
+	domainWriter *socksnet.AsyncUDPWriter
 
 	// clientAddr is the address the last valid packet came from, and where
 	// replies are sent. It lets a session survive a client changing network.
@@ -595,6 +604,9 @@ func (s *UDPSession) touch(now time.Time, clientAddr *net.UDPAddr) {
 func (s *UDPSession) close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		if s.domainWriter != nil {
+			s.domainWriter.Close()
+		}
 		if s.out != nil {
 			s.out.Close()
 		}

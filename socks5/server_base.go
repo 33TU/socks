@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"slices"
-	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -32,8 +31,8 @@ type BaseServerHandler struct {
 	AllowBind              bool
 	AllowUDPAssociate      bool
 	AllowResolve           bool
-	ResolveResolver        *net.Resolver
-	ResolvePreferIPv4      bool // When true, prefer IPv4 addresses over IPv6 for DNS resolution
+	ResolveResolver        *net.Resolver // also resolves UDP ASSOCIATE domain targets
+	ResolvePreferIPv4      bool          // When true, prefer IPv4 addresses over IPv6 for DNS resolution
 
 	SupportedMethods []byte
 
@@ -163,7 +162,7 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 		}
 	}
 
-	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.UDPAssociateBufferSize, relayAddr, outAddr, advertiseAddr); isUnexpectedNetErr(err) {
+	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.UDPAssociateBufferSize, relayAddr, outAddr, advertiseAddr, d.ResolveResolver); isUnexpectedNetErr(err) {
 		return fmt.Errorf("UDP ASSOCIATE failed to %s: %w", addr, err)
 	}
 
@@ -343,6 +342,7 @@ func BaseOnUDPAssociate(
 	relayAddr *net.UDPAddr, // local UDP bind address exposed to the SOCKS client
 	outAddr *net.UDPAddr, // local UDP bind/source address used for remote targets
 	advertiseAddr *net.UDPAddr, // address advertised to the SOCKS client
+	resolver *net.Resolver, // resolves domain targets; nil means net.DefaultResolver
 ) error {
 	var clientUDPAddr atomic.Pointer[net.UDPAddr]
 
@@ -369,6 +369,13 @@ func BaseOnUDPAssociate(
 		return fmt.Errorf("failed to listen on outbound UDP socket: %w", err)
 	}
 	defer outConn.Close()
+
+	// Domain targets are resolved off this handler's read loop: a slow lookup
+	// there would stall every other datagram the association is carrying.
+	domainWriter := socksnet.NewAsyncUDPWriter(outConn, &socksnet.AsyncUDPWriterConfig{
+		Resolver: resolver,
+	})
+	defer domainWriter.Close()
 
 	if advertiseAddr == nil {
 		advertiseAddr = relayConn.LocalAddr().(*net.UDPAddr)
@@ -444,6 +451,13 @@ func BaseOnUDPAssociate(
 
 			// Fragmentation unsupported; silently drop.
 			if pkt.Frag != 0x00 {
+				continue
+			}
+
+			// Addresses already in numeric form are sent straight out; only
+			// domains need resolving, and those go to the async writer.
+			if pkt.AddrType == AddrTypeDomain {
+				domainWriter.WriteToDomain(pkt.Data, pkt.Domain, pkt.Port)
 				continue
 			}
 
@@ -538,6 +552,9 @@ func cloneUDPAddr(a *net.UDPAddr) *net.UDPAddr {
 }
 
 // resolveUDPPacketTarget resolves the target address from a UDPPacket.
+//
+// Domain targets are handled by the association's AsyncUDPWriter instead, so
+// that resolution never happens on a relay's read loop.
 func resolveUDPPacketTarget(pkt *UDPPacket) (*net.UDPAddr, error) {
 	switch pkt.AddrType {
 	case AddrTypeIPv4, AddrTypeIPv6:
@@ -545,9 +562,6 @@ func resolveUDPPacketTarget(pkt *UDPPacket) (*net.UDPAddr, error) {
 			IP:   append(net.IP(nil), pkt.IP...),
 			Port: int(pkt.Port),
 		}, nil
-
-	case AddrTypeDomain:
-		return net.ResolveUDPAddr("udp", net.JoinHostPort(pkt.Domain, strconv.Itoa(int(pkt.Port))))
 
 	default:
 		return nil, fmt.Errorf("unsupported UDP address type: %d", pkt.AddrType)
