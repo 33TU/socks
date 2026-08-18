@@ -417,3 +417,76 @@ func BenchmarkUDPRelayRoundTrip(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkRawUDPSend is the floor: one sendto per datagram, no crypto, no
+// relay. Whatever the relay costs, it cannot beat this per packet.
+func BenchmarkRawUDPSend(b *testing.B) {
+	sink, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	defer sink.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			if _, _, err := sink.ReadFrom(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	conn, _ := net.ListenUDP("udp", nil)
+	defer conn.Close()
+
+	target := sink.LocalAddr().(*net.UDPAddr)
+	payload := make([]byte, 1400)
+
+	b.SetBytes(1400)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		if _, err := conn.WriteToUDP(payload, target); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkUDPClientSendThroughput pushes datagrams through the client without
+// waiting for replies, so packets queue as they would under load.
+func BenchmarkUDPClientSendThroughput(b *testing.B) {
+	sink, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	defer sink.Close()
+	go func() {
+		buf := make([]byte, 64*1024)
+		for {
+			if _, _, err := sink.ReadFrom(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	psk := make([]byte, 16)
+	cfg := &shadowsocks.Config{
+		Method: shadowsocks.Method2022Blake3AES128GCM,
+		PSK:    base64.StdEncoding.EncodeToString(psk),
+	}
+
+	d := shadowsocks.NewDialer(sink.LocalAddr().String(), cfg, nil)
+	conn, err := d.ListenPacket(context.Background(), nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer conn.Close()
+
+	target := &net.UDPAddr{IP: net.IPv4(93, 184, 216, 34), Port: 443}
+	payload := make([]byte, 1400)
+	_ = conn.SetWriteDeadline(time.Now().Add(time.Minute))
+
+	b.SetBytes(1400)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		if _, err := conn.WriteTo(payload, target); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
