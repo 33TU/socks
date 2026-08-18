@@ -11,7 +11,18 @@ const (
 )
 
 // bytesPool is an array of sync.Pool for byte slices of sizes 2^0, 2^1, ..., 2^31.
+//
+// The pools hold *[]byte rather than []byte: a sync.Pool stores any, and
+// putting a slice in one boxes its header, which allocates on every Put. Every
+// relayed chunk and datagram passes through here at least twice, so that
+// allocation showed up on all of them.
 var bytesPool [maxPow + 1]*sync.Pool
+
+// headerPool recycles the pointers the buffers are handed over in, so that
+// avoiding the boxing does not simply move the allocation to the pointer.
+var headerPool = sync.Pool{
+	New: func() any { return new([]byte) },
+}
 
 func init() {
 	for i := minPow; i <= maxPow; i++ {
@@ -20,7 +31,8 @@ func init() {
 		bytesPool[i] = &sync.Pool{
 			New: func(sz int) func() any {
 				return func() any {
-					return make([]byte, sz)
+					b := make([]byte, sz)
+					return &b
 				}
 			}(size),
 		}
@@ -38,21 +50,43 @@ func GetBytes(n int) []byte {
 		return make([]byte, n) // too large, don’t pool
 	}
 
-	return bytesPool[i].Get().([]byte)[:n]
+	p := bytesPool[i].Get().(*[]byte)
+	b := *p
+
+	*p = nil
+	headerPool.Put(p)
+
+	return b[:n]
 }
 
 // PutBytes returns a byte slice to the pool.
 func PutBytes(b []byte) {
-	if b == nil {
+	// A zero capacity slice has no class to go back to, and slicing it to one
+	// would panic.
+	if cap(b) == 0 {
 		return
 	}
 
-	i := ceilLog2(cap(b))
+	// Rounded down, so the buffer always covers the class it goes back to. A
+	// capacity that is not a power of two, as an appended buffer has, would
+	// otherwise be sliced past its end.
+	i := floorLog2(cap(b))
 	if i > maxPow {
 		return
 	}
 
-	bytesPool[i].Put(b[:1<<i])
+	p := headerPool.Get().(*[]byte)
+	*p = b[:1<<i]
+
+	bytesPool[i].Put(p)
+}
+
+// floorLog2 returns the largest i where 1<<i <= n.
+func floorLog2(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	return bits.Len(uint(n)) - 1
 }
 
 func ceilLog2(n int) int {

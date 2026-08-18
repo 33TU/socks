@@ -11,6 +11,12 @@ type TCPStreamCipher struct {
 	Method Method
 	AEAD   cipher.AEAD
 	Nonce  [AeadNonceSize]byte
+
+	// lenBuf holds the length chunk being encoded. It lives here rather than on
+	// the stack because passing it to the AEAD would otherwise escape it, once
+	// per chunk written. A stream cipher already carries per-operation state in
+	// Nonce, so it was never usable from two goroutines at once.
+	lenBuf [TCPChunkLengthLen]byte
 }
 
 // NewTCPStreamCipher creates a new TCP stream cipher from an already-derived subkey.
@@ -123,9 +129,8 @@ func (s *TCPStreamCipher) EncryptedPayloadLength(payloadLen int) int {
 
 // EncodeChunkLengthTo encrypts a 2-byte big-endian payload length into dst.
 func (s *TCPStreamCipher) EncodeChunkLengthTo(dst []byte, payloadLen uint16) ([]byte, error) {
-	var buf [TCPChunkLengthLen]byte
-	binary.BigEndian.PutUint16(buf[:], payloadLen)
-	return s.SealTo(dst, buf[:])
+	binary.BigEndian.PutUint16(s.lenBuf[:], payloadLen)
+	return s.SealTo(dst, s.lenBuf[:])
 }
 
 // DecodeChunkLength decrypts and parses a 2-byte big-endian payload length.

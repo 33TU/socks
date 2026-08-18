@@ -70,38 +70,44 @@ func (r *TCPChunkReader) ReadChunkTo(dst []byte) ([]byte, int64, error) {
 		return nil, 0, err
 	}
 
-	var total int64
-
-	n, err := io.ReadFull(r.Src, r.encLenBuf)
-	total += int64(n)
+	payloadLen, total, err := r.readChunkLength()
 	if err != nil {
 		return nil, total, err
+	}
+
+	dst, n, err := r.readChunkPayloadTo(dst, int(payloadLen))
+	return dst, total + n, err
+}
+
+// readChunkLength reads one length chunk and returns the plaintext length of
+// the payload chunk that follows it.
+func (r *TCPChunkReader) readChunkLength() (uint16, int64, error) {
+	n, err := io.ReadFull(r.Src, r.encLenBuf)
+	if err != nil {
+		return 0, int64(n), err
 	}
 
 	payloadLen, err := r.Cipher.DecodeChunkLength(r.encLenBuf, r.lenScratch[:0])
-	if err != nil {
-		return nil, total, err
-	}
+	return payloadLen, int64(n), err
+}
 
-	encPayloadLen := r.Cipher.EncryptedPayloadLength(int(payloadLen))
+// readChunkPayloadTo reads one payload chunk carrying payloadLen plaintext
+// bytes and decrypts it into dst.
+func (r *TCPChunkReader) readChunkPayloadTo(dst []byte, payloadLen int) ([]byte, int64, error) {
+	encPayloadLen := r.Cipher.EncryptedPayloadLength(payloadLen)
 	if cap(r.encPayloadBuf) < encPayloadLen {
 		r.encPayloadBuf = make([]byte, encPayloadLen)
 	} else {
 		r.encPayloadBuf = r.encPayloadBuf[:encPayloadLen]
 	}
 
-	n, err = io.ReadFull(r.Src, r.encPayloadBuf)
-	total += int64(n)
+	n, err := io.ReadFull(r.Src, r.encPayloadBuf)
 	if err != nil {
-		return nil, total, err
+		return nil, int64(n), err
 	}
 
 	dst, err = r.Cipher.DecodeChunkPayloadTo(dst, r.encPayloadBuf)
-	if err != nil {
-		return nil, total, err
-	}
-
-	return dst, total, nil
+	return dst, int64(n), err
 }
 
 // pushFront buffers payload that arrived ahead of the chunk stream, such as the
@@ -120,8 +126,29 @@ func (r *TCPChunkReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 
-	if len(r.readBuf) == 0 {
-		buf, _, err := r.ReadChunkTo(r.chunkBuf[:0])
+	for len(r.readBuf) == 0 {
+		payloadLen, _, err := r.readChunkLength()
+		if err != nil {
+			return 0, err
+		}
+
+		// A chunk that fits the caller's buffer is decrypted straight into it,
+		// which saves copying every byte of the stream a second time.
+		if int(payloadLen) <= len(p) {
+			out, _, err := r.readChunkPayloadTo(p[:0], int(payloadLen))
+			if err != nil {
+				return 0, err
+			}
+			if len(out) > 0 {
+				return len(out), nil
+			}
+
+			// An empty chunk carries nothing to return; read the next one
+			// rather than reporting a read of zero bytes.
+			continue
+		}
+
+		buf, _, err := r.readChunkPayloadTo(r.chunkBuf[:0], int(payloadLen))
 		if err != nil {
 			return 0, err
 		}
