@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +46,15 @@ type BaseServerHandler struct {
 	// It returns the response token to send back to the client, whether the
 	// authentication exchange is complete, and any error encountered.
 	GSSAPIAuthenticator func(ctx context.Context, token []byte) (resp []byte, done bool, err error)
+
+	// UDPListenPacket opens the connection a UDP ASSOCIATE relays over. Nil
+	// binds a local UDP socket, which sends datagrams straight out.
+	//
+	// Returning a socksnet.DomainPacketConn tunnels the association: a
+	// Shadowsocks UDP connection here turns this server into a local front end
+	// whose UDP traffic leaves through the Shadowsocks proxy, with domain
+	// targets resolved there rather than locally.
+	UDPListenPacket func(ctx context.Context, conn net.Conn, req *Request) (net.PacketConn, error)
 
 	// UDPAssociateAddrs returns the addresses used for a SOCKS5 UDP ASSOCIATE.
 	//
@@ -162,7 +172,15 @@ func (d *BaseServerHandler) OnUDPAssociate(ctx context.Context, conn net.Conn, r
 		}
 	}
 
-	if err = BaseOnUDPAssociate(ctx, conn, req, d.UDPAssociateTimeout, d.UDPAssociateBufferSize, relayAddr, outAddr, advertiseAddr, d.ResolveResolver); isUnexpectedNetErr(err) {
+	if err = BaseOnUDPAssociate(ctx, conn, req, UDPAssociateOptions{
+		Timeout:       d.UDPAssociateTimeout,
+		BufferSize:    d.UDPAssociateBufferSize,
+		RelayAddr:     relayAddr,
+		OutAddr:       outAddr,
+		AdvertiseAddr: advertiseAddr,
+		Resolver:      d.ResolveResolver,
+		ListenPacket:  d.udpListenPacket(conn, req),
+	}); isUnexpectedNetErr(err) {
 		return fmt.Errorf("UDP ASSOCIATE failed to %s: %w", addr, err)
 	}
 
@@ -193,6 +211,17 @@ func (d *BaseServerHandler) OnError(ctx context.Context, conn net.Conn, err erro
 
 func (d *BaseServerHandler) OnPanic(ctx context.Context, conn net.Conn, r any) {
 	slog.WarnContext(ctx, "panic occurred", "error", r)
+}
+
+// udpListenPacket adapts UDPListenPacket to what BaseOnUDPAssociate expects.
+func (d *BaseServerHandler) udpListenPacket(conn net.Conn, req *Request) func(context.Context) (net.PacketConn, error) {
+	if d.UDPListenPacket == nil {
+		return nil
+	}
+
+	return func(ctx context.Context) (net.PacketConn, error) {
+		return d.UDPListenPacket(ctx, conn, req)
+	}
 }
 
 // GetSupportedMethods returns the supported authentication methods.
@@ -333,19 +362,44 @@ func BaseOnBind(ctx context.Context, conn net.Conn, req *Request, acceptTimeout,
 }
 
 // BaseOnUDPAssociate provides UDP ASSOCIATE implementation.
-func BaseOnUDPAssociate(
-	ctx context.Context,
-	conn net.Conn,
-	req *Request,
-	timeout time.Duration,
-	bufferSize int,
-	relayAddr *net.UDPAddr, // local UDP bind address exposed to the SOCKS client
-	outAddr *net.UDPAddr, // local UDP bind/source address used for remote targets
-	advertiseAddr *net.UDPAddr, // address advertised to the SOCKS client
-	resolver *net.Resolver, // resolves domain targets; nil means net.DefaultResolver
-) error {
+// UDPAssociateOptions configures a UDP ASSOCIATE relay.
+type UDPAssociateOptions struct {
+	// Timeout is how long a relay waits on an idle socket.
+	Timeout time.Duration
+
+	// BufferSize is the datagram buffer size. Zero means 64 KiB.
+	BufferSize int
+
+	// RelayAddr is the local UDP bind address exposed to the SOCKS client.
+	RelayAddr *net.UDPAddr
+
+	// OutAddr is the local UDP bind address used for remote targets.
+	// It is ignored when ListenPacket is set.
+	OutAddr *net.UDPAddr
+
+	// AdvertiseAddr is the address returned to the SOCKS client.
+	// Nil advertises the relay socket's own address.
+	AdvertiseAddr *net.UDPAddr
+
+	// Resolver resolves domain targets. Nil means net.DefaultResolver.
+	// It is unused when the outbound connection resolves names itself.
+	Resolver *net.Resolver
+
+	// ListenPacket opens the connection datagrams are relayed over.
+	// Nil binds a local UDP socket to OutAddr.
+	//
+	// Returning a socksnet.DomainPacketConn, as a Shadowsocks UDP connection
+	// does, tunnels domain targets by name so they are resolved at the far end
+	// rather than here.
+	ListenPacket func(ctx context.Context) (net.PacketConn, error)
+}
+
+// BaseOnUDPAssociate provides UDP ASSOCIATE implementation.
+func BaseOnUDPAssociate(ctx context.Context, conn net.Conn, req *Request, opts UDPAssociateOptions) error {
 	var clientUDPAddr atomic.Pointer[net.UDPAddr]
 
+	timeout := opts.Timeout
+	bufferSize := opts.BufferSize
 	if bufferSize <= 0 {
 		bufferSize = 64 * 1024
 	}
@@ -356,27 +410,35 @@ func BaseOnUDPAssociate(
 		return fmt.Errorf("unexpected TCP remote addr type %T", conn.RemoteAddr())
 	}
 
-	relayConn, err := net.ListenUDP("udp", relayAddr)
+	relayConn, err := net.ListenUDP("udp", opts.RelayAddr)
 	if err != nil {
 		_ = WriteRejectReply(conn, RepGeneralFailure)
 		return fmt.Errorf("failed to listen on relay UDP socket: %w", err)
 	}
 	defer relayConn.Close()
 
-	outConn, err := net.ListenUDP("udp", outAddr)
+	outConn, err := openOutboundPacketConn(ctx, opts)
 	if err != nil {
 		_ = WriteRejectReply(conn, RepGeneralFailure)
-		return fmt.Errorf("failed to listen on outbound UDP socket: %w", err)
+		return fmt.Errorf("failed to open outbound UDP connection: %w", err)
 	}
 	defer outConn.Close()
 
-	// Domain targets are resolved off this handler's read loop: a slow lookup
+	// An outbound connection that addresses targets by name does its own
+	// resolution, at the far end of whatever it tunnels through. Otherwise
+	// names are resolved here, off this handler's read loop: a slow lookup
 	// there would stall every other datagram the association is carrying.
-	domainWriter := socksnet.NewAsyncUDPWriter(outConn, &socksnet.AsyncUDPWriterConfig{
-		Resolver: resolver,
-	})
-	defer domainWriter.Close()
+	domainConn, tunnelsDomains := outConn.(socksnet.DomainPacketConn)
 
+	var domainWriter *socksnet.AsyncUDPWriter
+	if !tunnelsDomains {
+		domainWriter = socksnet.NewAsyncUDPWriter(outConn, &socksnet.AsyncUDPWriterConfig{
+			Resolver: opts.Resolver,
+		})
+		defer domainWriter.Close()
+	}
+
+	advertiseAddr := opts.AdvertiseAddr
 	if advertiseAddr == nil {
 		advertiseAddr = relayConn.LocalAddr().(*net.UDPAddr)
 	}
@@ -455,9 +517,13 @@ func BaseOnUDPAssociate(
 			}
 
 			// Addresses already in numeric form are sent straight out; only
-			// domains need resolving, and those go to the async writer.
+			// domains need resolving, wherever that happens.
 			if pkt.AddrType == AddrTypeDomain {
-				domainWriter.WriteToDomain(pkt.Data, pkt.Domain, pkt.Port)
+				if tunnelsDomains {
+					_, _ = domainConn.WriteToDomain(pkt.Data, pkt.Domain, pkt.Port)
+				} else {
+					domainWriter.WriteToDomain(pkt.Data, pkt.Domain, pkt.Port)
+				}
 				continue
 			}
 
@@ -466,7 +532,7 @@ func BaseOnUDPAssociate(
 				continue
 			}
 
-			if _, err := outConn.WriteToUDP(pkt.Data, targetAddr); err != nil {
+			if _, err := outConn.WriteTo(pkt.Data, targetAddr); err != nil {
 				continue
 			}
 		}
@@ -493,7 +559,7 @@ func BaseOnUDPAssociate(
 				}
 			}
 
-			n, srcAddr, err := outConn.ReadFromUDP(inBuf)
+			n, srcAddr, err := outConn.ReadFrom(inBuf)
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					return nil
@@ -506,22 +572,19 @@ func BaseOnUDPAssociate(
 				continue
 			}
 
-			var resp UDPPacket
-
-			addrType := AddrTypeIPv6
-			ip := srcAddr.IP
-			if ip4 := ip.To4(); ip4 != nil {
-				addrType = AddrTypeIPv4
-				ip = ip4
+			addrType, ip, domain, port, err := splitPacketSource(srcAddr)
+			if err != nil {
+				continue
 			}
 
+			var resp UDPPacket
 			resp.Init(
 				[2]byte{0x00, 0x00},
 				0x00,
-				byte(addrType),
+				addrType,
 				ip,
-				"",
-				uint16(srcAddr.Port),
+				domain,
+				port,
 				inBuf[:n],
 			)
 
@@ -549,6 +612,52 @@ func cloneUDPAddr(a *net.UDPAddr) *net.UDPAddr {
 		Port: a.Port,
 		Zone: a.Zone,
 	}
+}
+
+// openOutboundPacketConn opens the connection datagrams are relayed over.
+func openOutboundPacketConn(ctx context.Context, opts UDPAssociateOptions) (net.PacketConn, error) {
+	if opts.ListenPacket != nil {
+		conn, err := opts.ListenPacket(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if conn == nil {
+			return nil, fmt.Errorf("ListenPacket returned a nil connection")
+		}
+		return conn, nil
+	}
+
+	return net.ListenUDP("udp", opts.OutAddr)
+}
+
+// splitPacketSource describes where a relayed reply came from, in the terms a
+// SOCKS5 reply packet needs. A tunnelled connection may report a name.
+func splitPacketSource(addr net.Addr) (addrType byte, ip net.IP, domain string, port uint16, err error) {
+	if udpAddr, ok := addr.(*net.UDPAddr); ok {
+		if ip4 := udpAddr.IP.To4(); ip4 != nil {
+			return AddrTypeIPv4, ip4, "", uint16(udpAddr.Port), nil
+		}
+		return AddrTypeIPv6, udpAddr.IP, "", uint16(udpAddr.Port), nil
+	}
+
+	host, portStr, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return 0, nil, "", 0, err
+	}
+
+	portNum, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return 0, nil, "", 0, err
+	}
+
+	if parsed := net.ParseIP(host); parsed != nil {
+		if ip4 := parsed.To4(); ip4 != nil {
+			return AddrTypeIPv4, ip4, "", uint16(portNum), nil
+		}
+		return AddrTypeIPv6, parsed, "", uint16(portNum), nil
+	}
+
+	return AddrTypeDomain, nil, host, uint16(portNum), nil
 }
 
 // resolveUDPPacketTarget resolves the target address from a UDPPacket.

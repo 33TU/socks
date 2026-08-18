@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/33TU/socks/internal"
+	socksnet "github.com/33TU/socks/net"
 )
 
 // UDPAddr adapts a Shadowsocks address to net.Addr, so datagrams can be sent to
@@ -171,6 +172,16 @@ func (c *UDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	return len(p), nil
 }
 
+// WriteToDomain sends p to domain:port, leaving the name for the Shadowsocks
+// server to resolve. It implements socksnet.DomainPacketConn, so a relay
+// tunnelling through this connection does not resolve targets locally.
+func (c *UDPConn) WriteToDomain(p []byte, domain string, port uint16) (int, error) {
+	var target Addr
+	target.Init(AddrTypeDomain, nil, domain, port)
+
+	return c.WriteTo(p, &UDPAddr{Target: target})
+}
+
 // ReadFrom implements net.PacketConn.
 //
 // Packets that fail to decrypt or validate are dropped, and reading continues,
@@ -303,7 +314,10 @@ func (c *UDPConn) Close() error {
 	return c.conn.Close()
 }
 
-var _ net.PacketConn = (*UDPConn)(nil)
+var (
+	_ net.PacketConn            = (*UDPConn)(nil)
+	_ socksnet.DomainPacketConn = (*UDPConn)(nil)
+)
 
 // targetFromNetAddr converts a net.Addr into a Shadowsocks address.
 func targetFromNetAddr(addr net.Addr) (Addr, error) {

@@ -29,7 +29,7 @@ const (
 // Datagrams are dropped rather than queued without bound, which is what a UDP
 // relay should do under overload.
 type AsyncUDPWriter struct {
-	conn     *net.UDPConn
+	conn     net.PacketConn
 	resolver *net.Resolver
 
 	// OnError receives resolution and write failures. It may be nil.
@@ -90,7 +90,7 @@ type udpCacheEntry struct {
 
 // NewAsyncUDPWriter starts a writer sending on conn.
 // Close must be called to release its workers.
-func NewAsyncUDPWriter(conn *net.UDPConn, cfg *AsyncUDPWriterConfig) *AsyncUDPWriter {
+func NewAsyncUDPWriter(conn net.PacketConn, cfg *AsyncUDPWriterConfig) *AsyncUDPWriter {
 	if cfg == nil {
 		cfg = &AsyncUDPWriterConfig{}
 	}
@@ -274,7 +274,7 @@ func (w *AsyncUDPWriter) storeCache(domain string, ip net.IP) {
 }
 
 func (w *AsyncUDPWriter) send(payload []byte, addr *net.UDPAddr) {
-	if _, err := w.conn.WriteToUDP(payload, addr); err != nil {
+	if _, err := w.conn.WriteTo(payload, addr); err != nil {
 		w.reportError(err)
 	}
 }

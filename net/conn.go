@@ -14,6 +14,21 @@ type CloseWriter interface {
 	CloseWrite() error
 }
 
+// DomainPacketConn is a net.PacketConn that can send to a target named by
+// domain rather than by address.
+//
+// A relay whose outbound connection is itself a tunnel should not resolve
+// names locally: the tunnel's far end is where the target has to be reached
+// from, and resolving here both leaks the lookup and can resolve to an address
+// that is only meaningful on this side. Such a connection implements this
+// interface so callers can hand the name over instead.
+type DomainPacketConn interface {
+	net.PacketConn
+
+	// WriteToDomain sends p to domain:port.
+	WriteToDomain(p []byte, domain string, port uint16) (int, error)
+}
+
 // CopyConn copies data between src and dst with a timeout and buffer size.
 func CopyConn(dst, src net.Conn, timeout time.Duration, bufSize int) error {
 	defer func() {

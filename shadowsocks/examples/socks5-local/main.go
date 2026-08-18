@@ -7,6 +7,9 @@
 //
 //	socks5-local -proxy ss://2022-blake3-aes-128-gcm:<psk>@server:8388
 //	curl --socks5-hostname 127.0.0.1:1080 https://example.com
+//
+// TCP and UDP both leave through the proxy: CONNECT is dialed through it, and
+// UDP ASSOCIATE relays over a Shadowsocks UDP session.
 package main
 
 import (
@@ -14,6 +17,7 @@ import (
 	"flag"
 	"log"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,6 +29,7 @@ import (
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:1080", "local address to serve SOCKS5 on")
+	udp := flag.Bool("udp", true, "relay UDP as well as TCP")
 	proxyURL := flag.String(
 		"proxy",
 		os.Getenv("SS_PROXY_URL"),
@@ -52,14 +57,19 @@ func main() {
 		ConnectConnTimeout: 5 * time.Minute,
 		ConnectBufferSize:  32 * 1024,
 
-		// BIND, UDP ASSOCIATE and RESOLVE stay off on purpose. The SOCKS5
-		// server implements them with its own sockets and resolver, which would
-		// send that traffic straight out rather than through the tunnel. Use
-		// Dialer.ListenPacket for UDP through Shadowsocks instead; see the
-		// udp example.
-		AllowBind:         false,
-		AllowUDPAssociate: false,
-		AllowResolve:      false,
+		// Each association relays over its own Shadowsocks UDP session, so UDP
+		// leaves through the proxy rather than straight out of this host.
+		AllowUDPAssociate:      *udp,
+		UDPAssociateTimeout:    5 * time.Minute,
+		UDPAssociateBufferSize: 64 * 1024,
+		UDPListenPacket: func(ctx context.Context, _ net.Conn, _ *socks5.Request) (net.PacketConn, error) {
+			return dialer.ListenPacket(ctx, nil)
+		},
+
+		// BIND and RESOLVE stay off. The SOCKS5 server implements them with its
+		// own listener and resolver, which would step outside the tunnel.
+		AllowBind:    false,
+		AllowResolve: false,
 
 		SupportedMethods: []byte{socks5.MethodNoAuth},
 	}
@@ -70,6 +80,7 @@ func main() {
 	slog.Info("local SOCKS5 server listening",
 		"address", *listen,
 		"proxy", dialer.ProxyAddress(),
+		"udp", *udp,
 	)
 
 	if err := socks5.ListenAndServe(ctx, "tcp", *listen, handler); err != nil {
