@@ -713,28 +713,36 @@ func (s *UDPSession) writeToClient(
 		return err
 	}
 
-	paddingBuf := internal.GetBuffer(paddingLen)
-	defer internal.PutBuffer(paddingBuf)
-	if err := FillRandomBytes(paddingBuf.B); err != nil {
+	// Padding, the body and the finished packet share one buffer, as on the
+	// client side: three separate ones cost three pool round trips per reply.
+	var header UDPServerHeader
+	header.Init(UDPHeaderTypeServerPacket, uint64(time.Now().Unix()), s.clientSessionID, nil, source)
+
+	bodyLen := header.EncodedLen() + paddingLen + len(payload)
+	packetLen := s.serverCipher.cipher.PacketOverhead() + bodyLen
+
+	scratch := internal.GetBuffer(paddingLen + bodyLen + packetLen)
+	defer internal.PutBuffer(scratch)
+
+	pad := scratch.B[:paddingLen]
+	if err := FillRandomBytes(pad); err != nil {
 		return err
 	}
 
-	var header UDPServerHeader
-	header.Init(UDPHeaderTypeServerPacket, uint64(time.Now().Unix()), s.clientSessionID, paddingBuf.B, source)
+	header.Init(UDPHeaderTypeServerPacket, header.Timestamp, s.clientSessionID, pad, source)
 
-	bodyBuf := internal.GetBuffer(header.EncodedLen() + len(payload))
-	defer internal.PutBuffer(bodyBuf)
-
-	body, err := header.EncodeTo(bodyBuf.B[:0])
+	// The body and the packet must not overlap: an AEAD's output may not run
+	// into its own plaintext.
+	body, err := header.EncodeTo(scratch.B[paddingLen:paddingLen][:0])
 	if err != nil {
 		return err
 	}
 	body = append(body, payload...)
 
-	packetBuf := internal.GetBuffer(s.serverCipher.cipher.PacketOverhead() + len(body))
-	defer internal.PutBuffer(packetBuf)
-
-	packet, err := s.serverCipher.SealTo(packetBuf.B[:0], s.serverPacketID.Add(1)-1, body)
+	packet, err := s.serverCipher.SealTo(
+		scratch.B[paddingLen+bodyLen:paddingLen+bodyLen],
+		s.serverPacketID.Add(1)-1, body,
+	)
 	if err != nil {
 		return err
 	}

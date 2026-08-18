@@ -196,18 +196,18 @@ func (s *UDPSessionCipher) SealToWithIdentity(dst []byte, packetID uint64, body 
 		return nil, fmt.Errorf("identity headers need a method with a separate header")
 	}
 
-	var separate [UDPSeparateHeaderLen]byte
+	start := len(dst)
+
+	dst = appendZeros(dst, UDPSeparateHeaderLen)
+	separate := dst[start : start+UDPSeparateHeaderLen]
 	binary.BigEndian.PutUint64(separate[:UDPSessionIDLen], s.sessionID)
 	binary.BigEndian.PutUint64(separate[UDPSessionIDLen:], packetID)
 
 	nonce := separate[UDPSeparateHeaderLen-AeadNonceSize:]
 
-	start := len(dst)
-	dst = append(dst, separate[:]...)
-
 	// The headers mask their hashes with the plaintext separate header, so they
 	// have to be written before it is encrypted.
-	dst, err := EncodeUDPIdentityHeadersTo(dst, identityPSKs, s.psk, separate[:])
+	dst, err := EncodeUDPIdentityHeadersTo(dst, identityPSKs, s.psk, separate)
 	if err != nil {
 		return nil, err
 	}
@@ -230,36 +230,50 @@ func (s *UDPSessionCipher) SealTo(dst []byte, packetID uint64, body []byte) ([]b
 		return nil, fmt.Errorf("nil UDP session cipher")
 	}
 
-	var separate [UDPSeparateHeaderLen]byte
-	binary.BigEndian.PutUint64(separate[:UDPSessionIDLen], s.sessionID)
-	binary.BigEndian.PutUint64(separate[UDPSessionIDLen:], packetID)
+	start := len(dst)
 
 	if !s.cipher.HasSeparateHeader() {
-		// A fresh random nonce per packet, with the IDs inside the body.
-		var nonce [UDPNonceLen]byte
-		if err := FillRandomBytes(nonce[:]); err != nil {
+		// A fresh random nonce per packet, with the IDs inside the body. The
+		// nonce is written where it belongs in the packet and used from there:
+		// an AEAD appends its output, so it never disturbs what precedes it,
+		// and a nonce of our own would escape into the interface call.
+		dst = appendZeros(dst, UDPNonceLen)
+		nonce := dst[start : start+UDPNonceLen]
+		if err := FillRandomBytes(nonce); err != nil {
 			return nil, err
 		}
 
 		plaintext := internal.GetBuffer(UDPSeparateHeaderLen + len(body))
 		defer internal.PutBuffer(plaintext)
-		copy(plaintext.B, separate[:])
+
+		binary.BigEndian.PutUint64(plaintext.B[:UDPSessionIDLen], s.sessionID)
+		binary.BigEndian.PutUint64(plaintext.B[UDPSessionIDLen:UDPSeparateHeaderLen], packetID)
 		copy(plaintext.B[UDPSeparateHeaderLen:], body)
 
-		dst = append(dst, nonce[:]...)
-		return s.aead.Seal(dst, nonce[:], plaintext.B, nil), nil
+		return s.aead.Seal(dst, nonce, plaintext.B, nil), nil
 	}
+
+	dst = appendZeros(dst, UDPSeparateHeaderLen)
+	separate := dst[start : start+UDPSeparateHeaderLen]
+	binary.BigEndian.PutUint64(separate[:UDPSessionIDLen], s.sessionID)
+	binary.BigEndian.PutUint64(separate[UDPSessionIDLen:], packetID)
 
 	// The nonce comes from the plaintext separate header, which is block
 	// encrypted afterwards so it never appears on the wire in the clear.
 	nonce := separate[UDPSeparateHeaderLen-AeadNonceSize:]
 
-	start := len(dst)
-	dst = append(dst, separate[:]...)
 	dst = s.aead.Seal(dst, nonce, body, nil)
 	s.cipher.block.Encrypt(dst[start:start+UDPSeparateHeaderLen], dst[start:start+UDPSeparateHeaderLen])
 
 	return dst, nil
+}
+
+// appendZeros extends dst by n zero bytes, to be written in place.
+func appendZeros(dst []byte, n int) []byte {
+	for range n {
+		dst = append(dst, 0)
+	}
+	return dst
 }
 
 // OpenTo decrypts a packet, appending the plaintext body to dst. It returns the

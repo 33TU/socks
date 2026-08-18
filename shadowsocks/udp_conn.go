@@ -147,28 +147,37 @@ func (c *UDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		return 0, err
 	}
 
-	paddingBuf := internal.GetBuffer(paddingLen)
-	defer internal.PutBuffer(paddingBuf)
-	if err := FillRandomBytes(paddingBuf.B); err != nil {
+	// Padding, the body and the finished packet all come out of one buffer,
+	// sliced into regions. Three separate ones cost three pool round trips per
+	// datagram, and the sizes are all known here.
+	var header UDPClientHeader
+	header.Init(UDPHeaderTypeClientPacket, uint64(time.Now().Unix()), nil, target)
+
+	bodyLen := header.EncodedLen() + paddingLen + len(p)
+	packetLen := c.cipher.PacketOverhead() + len(c.identityPSKs)*IdentityHeaderLen + bodyLen
+
+	scratch := internal.GetBuffer(paddingLen + bodyLen + packetLen)
+	defer internal.PutBuffer(scratch)
+
+	padding := scratch.B[:paddingLen]
+	if err := FillRandomBytes(padding); err != nil {
 		return 0, err
 	}
 
-	var header UDPClientHeader
-	header.Init(UDPHeaderTypeClientPacket, uint64(time.Now().Unix()), paddingBuf.B, target)
+	header.Init(UDPHeaderTypeClientPacket, header.Timestamp, padding, target)
 
-	bodyBuf := internal.GetBuffer(header.EncodedLen() + len(p))
-	defer internal.PutBuffer(bodyBuf)
-
-	body, err := header.EncodeTo(bodyBuf.B[:0])
+	// The body and the packet must not overlap: an AEAD's output may not run
+	// into its own plaintext.
+	body, err := header.EncodeTo(scratch.B[paddingLen:paddingLen][:0])
 	if err != nil {
 		return 0, err
 	}
 	body = append(body, p...)
 
-	packetBuf := internal.GetBuffer(c.cipher.PacketOverhead() + len(c.identityPSKs)*IdentityHeaderLen + len(body))
-	defer internal.PutBuffer(packetBuf)
-
-	packet, err := c.session.SealToWithIdentity(packetBuf.B[:0], c.packetID.Add(1)-1, body, c.identityPSKs)
+	packet, err := c.session.SealToWithIdentity(
+		scratch.B[paddingLen+bodyLen:paddingLen+bodyLen],
+		c.packetID.Add(1)-1, body, c.identityPSKs,
+	)
 	if err != nil {
 		return 0, err
 	}
