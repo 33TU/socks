@@ -403,6 +403,20 @@ within 30 seconds of system time, and a salt that has not been seen in the last
 60 seconds. A connection that fails any of these is drained rather than closed,
 so a prober cannot learn how many bytes the server consumed.
 
+TCP and UDP are wholly independent: separate entry points, separate handlers,
+and no shared runtime state. Serve whichever transports you want, on the same
+address if you want both.
+
+| Mode | Call |
+| --- | --- |
+| TCP only | `ListenAndServe(ctx, "tcp", addr, handler)` |
+| UDP only | `ListenAndServePacket(ctx, addr, udpHandler)` |
+| Both | both, same address |
+
+Unlike SOCKS5 UDP ASSOCIATE, a Shadowsocks UDP relay needs no TCP connection to
+work, so a UDP-only server is perfectly usable on its own. `Dialer.ListenPacket`
+opens a UDP socket and nothing else.
+
 Both servers take a handler, `ServerHandler` for TCP and `UDPServerHandler` for
 UDP, with `BaseServerHandler` and `BaseUDPServerHandler` covering the usual
 cases. The UDP handler decides policy and placement per session:

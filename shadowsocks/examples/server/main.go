@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -20,9 +21,14 @@ func main() {
 	listen := flag.String("listen", ":8388", "address to listen on")
 	method := flag.String("method", shadowsocks.Method2022Blake3AES128GCM, "encryption method")
 	psk := flag.String("psk", os.Getenv("SS_PSK"), "base64 pre-shared key; generated when empty")
-	udp := flag.Bool("udp", true, "also relay UDP")
+	mode := flag.String("mode", modeTCPAndUDP, "which transports to relay: tcp_only, udp_only, or tcp_and_udp")
 
 	flag.Parse()
+
+	serveTCP, serveUDP, err := parseMode(*mode)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	if *psk == "" {
 		generated, err := generatePSK(*method)
@@ -45,20 +51,22 @@ func main() {
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
-		handler := &shadowsocks.BaseServerHandler{
-			Config:             cfg,
-			AllowConnect:       true,
-			RequestTimeout:     30 * time.Second,
-			ConnectConnTimeout: 5 * time.Minute,
-			ConnectBufferSize:  32 * 1024,
-		}
+	if serveTCP {
+		g.Go(func() error {
+			handler := &shadowsocks.BaseServerHandler{
+				Config:             cfg,
+				AllowConnect:       true,
+				RequestTimeout:     30 * time.Second,
+				ConnectConnTimeout: 5 * time.Minute,
+				ConnectBufferSize:  32 * 1024,
+			}
 
-		slog.Info("shadowsocks TCP server listening", "address", *listen)
-		return shadowsocks.ListenAndServe(ctx, "tcp", *listen, handler)
-	})
+			slog.Info("shadowsocks TCP server listening", "address", *listen)
+			return shadowsocks.ListenAndServe(ctx, "tcp", *listen, handler)
+		})
+	}
 
-	if *udp {
+	if serveUDP {
 		g.Go(func() error {
 			handler := &shadowsocks.BaseUDPServerHandler{
 				Config:         cfg,
@@ -73,6 +81,32 @@ func main() {
 
 	if err := g.Wait(); err != nil {
 		log.Fatalf("server error: %v", err)
+	}
+}
+
+// Relay modes, named as other Shadowsocks implementations name them.
+const (
+	modeTCPOnly   = "tcp_only"
+	modeUDPOnly   = "udp_only"
+	modeTCPAndUDP = "tcp_and_udp"
+)
+
+// parseMode reports which transports a mode selects. TCP and UDP are wholly
+// independent in Shadowsocks, so any of the three combinations is valid, and a
+// UDP-only server needs no TCP connection to work.
+func parseMode(mode string) (tcp, udp bool, err error) {
+	switch mode {
+	case modeTCPOnly:
+		return true, false, nil
+	case modeUDPOnly:
+		return false, true, nil
+	case modeTCPAndUDP:
+		return true, true, nil
+	default:
+		return false, false, fmt.Errorf(
+			"invalid mode %q: want %s, %s, or %s",
+			mode, modeTCPOnly, modeUDPOnly, modeTCPAndUDP,
+		)
 	}
 }
 
