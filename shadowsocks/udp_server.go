@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -15,21 +14,15 @@ import (
 	"github.com/33TU/socks/internal"
 )
 
-// UDPServer relays Shadowsocks 2022 UDP packets between clients and their targets.
-//
-// Packets are routed by client session ID rather than by source address, so a
-// relay session survives a client changing network. Each client session owns one
-// outbound socket, and is remembered for at least a full replay window so that
-// replayed packets from a forgotten session cannot be accepted again.
-type UDPServer struct {
-	// Config is the server's method and PSK. It is required.
-	Config *Config
-
+// UDPServerOptions are the relay parameters a UDP server handler supplies.
+// The zero value selects the defaults documented on each field.
+type UDPServerOptions struct {
 	// SessionTimeout is how long an idle relay session is kept.
-	// Values below ReplayWindowDuration are raised to it.
+	// Values below ReplayWindowDuration are raised to it, since a shorter NAT
+	// timeout would let an attacker replay packets from a forgotten session.
 	SessionTimeout time.Duration
 
-	// BufferSize is the read buffer size. Zero means DefaultUDPBufferSize.
+	// BufferSize is the packet buffer size. Zero means DefaultUDPBufferSize.
 	BufferSize int
 
 	// FilterSize is the sliding window size used to reject replayed packets.
@@ -42,65 +35,117 @@ type UDPServer struct {
 
 	// Resolver resolves domain targets. Nil means net.DefaultResolver.
 	Resolver *net.Resolver
-
-	// OnError is called for packets that could not be relayed. Nil logs at debug level.
-	OnError func(ctx context.Context, err error)
-
-	cipher  *UDPCipher
-	serving atomic.Bool
-
-	mu       sync.Mutex
-	sessions map[uint64]*udpRelaySession
 }
 
-// ListenAndServe listens for UDP packets on address and relays them.
-func (s *UDPServer) ListenAndServe(ctx context.Context, address string) error {
+// normalize returns the options with defaults filled in.
+func (o UDPServerOptions) normalize() UDPServerOptions {
+	if o.SessionTimeout < ReplayWindowDuration {
+		o.SessionTimeout = ReplayWindowDuration
+	}
+	if o.BufferSize <= 0 {
+		o.BufferSize = DefaultUDPBufferSize
+	}
+	if o.Padding == nil {
+		o.Padding = PadPlainDNS(MaxPaddingLength)
+	}
+	if o.Resolver == nil {
+		o.Resolver = net.DefaultResolver
+	}
+	return o
+}
+
+// UDPServerHandler handles Shadowsocks UDP relay events.
+type UDPServerHandler interface {
+	// Cipher returns the crypto state used to accept packets.
+	Cipher(ctx context.Context) (*ServerCipher, error)
+
+	// Options returns the relay parameters.
+	Options() UDPServerOptions
+
+	// OnSession is called once a new client session has been established, which
+	// happens only after its first packet decrypts and validates. Returning an
+	// error rejects the session and drops the packet.
+	OnSession(ctx context.Context, session *UDPSession) error
+
+	// ListenPacket opens the outbound socket a session relays through. It is
+	// the hook for binding a particular source address or interface.
+	ListenPacket(ctx context.Context, session *UDPSession) (*net.UDPConn, error)
+
+	// OnPacket is called for every validated packet before it is relayed, with
+	// the target as named in the packet header, before any name resolution.
+	// Returning an error drops the packet.
+	OnPacket(ctx context.Context, session *UDPSession, target Addr, payload []byte) error
+
+	// OnSessionClose is called when a relay session ends.
+	OnSessionClose(ctx context.Context, session *UDPSession, errCause error)
+
+	// OnError is called for packets that could not be relayed.
+	OnError(ctx context.Context, err error)
+
+	// OnPanic is called when a panic occurs while relaying.
+	OnPanic(ctx context.Context, r any)
+}
+
+// ListenAndServePacket listens for UDP packets on address and relays them.
+func ListenAndServePacket(ctx context.Context, address string, handler UDPServerHandler) error {
 	pc, err := net.ListenPacket("udp", address)
 	if err != nil {
 		return err
 	}
 
-	return s.Serve(ctx, pc)
+	return ServePacket(ctx, pc, handler)
 }
 
-// Serve relays UDP packets received on pc until ctx is done or pc fails.
-func (s *UDPServer) Serve(ctx context.Context, pc net.PacketConn) error {
+// ServePacket relays Shadowsocks UDP packets received on pc until ctx is done
+// or pc fails.
+//
+// Packets are routed by client session ID rather than by source address, so a
+// relay session survives a client changing network. Each client session owns one
+// outbound socket, and is remembered for at least a full replay window so that
+// replayed packets from a forgotten session cannot be accepted again.
+func ServePacket(ctx context.Context, pc net.PacketConn, handler UDPServerHandler) error {
+	if handler == nil {
+		return fmt.Errorf("nil handler provided")
+	}
 	if pc == nil {
 		return fmt.Errorf("nil net.PacketConn")
 	}
 
-	// Relay sessions belong to the socket they were created on, so one server
-	// serves one connection at a time.
-	if !s.serving.CompareAndSwap(false, true) {
-		return fmt.Errorf("UDP server is already serving")
-	}
-	defer s.serving.Store(false)
-
-	cipher, err := NewServerCipher(s.Config, nil)
+	serverCipher, err := handler.Cipher(ctx)
 	if err != nil {
 		return err
 	}
-	if s.cipher, err = NewUDPCipher(cipher.Method, cipher.PSK); err != nil {
+	if err := serverCipher.Validate(); err != nil {
 		return err
 	}
 
-	s.mu.Lock()
-	s.sessions = make(map[uint64]*udpRelaySession)
-	s.mu.Unlock()
+	cipher, err := NewUDPCipher(serverCipher.Method, serverCipher.PSK)
+	if err != nil {
+		return err
+	}
 
-	defer s.closeSessions()
+	relay := &udpRelay{
+		cipher:   cipher,
+		handler:  handler,
+		options:  handler.Options().normalize(),
+		sessions: make(map[uint64]*UDPSession),
+	}
+	defer relay.closeSessions(ctx)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	go func() {
 		<-ctx.Done()
 		pc.Close()
 	}()
 
-	go s.purgeSessions(ctx)
+	go relay.purgeSessions(ctx)
 
-	buf := internal.GetBytes(s.bufferSize())
+	buf := internal.GetBytes(relay.options.BufferSize)
 	defer internal.PutBytes(buf)
 
-	plain := internal.GetBytes(s.bufferSize())
+	plain := internal.GetBytes(relay.options.BufferSize)
 	defer internal.PutBytes(plain)
 
 	for {
@@ -114,14 +159,33 @@ func (s *UDPServer) Serve(ctx context.Context, pc net.PacketConn) error {
 			}
 		}
 
-		if err := s.handlePacket(ctx, pc, plain[:0], buf[:n], from); err != nil {
-			s.onError(ctx, err)
+		if err := relay.handlePacket(ctx, pc, plain[:0], buf[:n], from); err != nil {
+			handler.OnError(ctx, err)
 		}
 	}
 }
 
+// udpRelay is the state of one ServePacket call.
+type udpRelay struct {
+	cipher  *UDPCipher
+	handler UDPServerHandler
+	options UDPServerOptions
+
+	mu       sync.Mutex
+	sessions map[uint64]*UDPSession
+}
+
 // handlePacket decrypts one client packet and forwards its payload to the target.
-func (s *UDPServer) handlePacket(ctx context.Context, pc net.PacketConn, dst, packet []byte, from net.Addr) error {
+func (r *udpRelay) handlePacket(ctx context.Context, pc net.PacketConn, dst, packet []byte, from net.Addr) (err error) {
+	// A panic here would otherwise take down the whole relay, since every
+	// session shares this read loop.
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.handler.OnPanic(ctx, rec)
+			err = fmt.Errorf("panic while handling packet from %s", from)
+		}
+	}()
+
 	now := time.Now()
 
 	clientAddr, ok := from.(*net.UDPAddr)
@@ -130,12 +194,12 @@ func (s *UDPServer) handlePacket(ctx context.Context, pc net.PacketConn, dst, pa
 	}
 
 	var (
-		session *udpRelaySession
+		session *UDPSession
 		isNew   bool
 	)
 
-	unpacked, err := s.cipher.OpenPacketTo(dst, packet, func(sessionID, packetID uint64) (*UDPSessionCipher, error) {
-		sess, created, err := s.resolveSession(sessionID)
+	unpacked, err := r.cipher.OpenPacketTo(dst, packet, func(sessionID, packetID uint64) (*UDPSessionCipher, error) {
+		sess, created, err := r.resolveSession(sessionID)
 		if err != nil {
 			return nil, err
 		}
@@ -167,43 +231,67 @@ func (s *UDPServer) handlePacket(ctx context.Context, pc net.PacketConn, dst, pa
 	session.touch(now, clientAddr)
 
 	if isNew {
-		// Registered before the relay goroutine starts: the goroutine removes
-		// itself on exit, and would otherwise race ahead of its own entry.
-		s.addSession(session)
-
-		if err := session.start(ctx, s, pc); err != nil {
-			s.removeSession(session)
-			return fmt.Errorf("starting session %d: %w", session.clientSessionID, err)
+		if err := r.startSession(ctx, pc, session); err != nil {
+			return fmt.Errorf("session %#x: %w", session.clientSessionID, err)
 		}
 	}
 
-	target, err := s.resolveTarget(ctx, header.Target)
+	payload := unpacked.Body[headerLen:]
+	if err := r.handler.OnPacket(ctx, session, header.Target, payload); err != nil {
+		return fmt.Errorf("dropping packet from %s to %s: %w", from, header.Target.Addr(), err)
+	}
+
+	target, err := r.resolveTarget(ctx, header.Target)
 	if err != nil {
 		return fmt.Errorf("resolving target %s: %w", header.Target.Addr(), err)
 	}
 
-	if _, err := session.out.WriteToUDP(unpacked.Body[headerLen:], target); err != nil {
+	if _, err := session.out.WriteToUDP(payload, target); err != nil {
 		return fmt.Errorf("forwarding to %s: %w", target, err)
 	}
 
 	return nil
 }
 
+// startSession admits a new session, opens its outbound socket and begins
+// relaying replies. The session is only published once it is ready to use.
+func (r *udpRelay) startSession(ctx context.Context, pc net.PacketConn, session *UDPSession) error {
+	if err := r.handler.OnSession(ctx, session); err != nil {
+		return err
+	}
+
+	out, err := r.handler.ListenPacket(ctx, session)
+	if err != nil {
+		return err
+	}
+	if out == nil {
+		return fmt.Errorf("handler returned a nil outbound socket")
+	}
+	session.out = out
+
+	// Registered before the relay goroutine starts: the goroutine removes
+	// itself on exit, and would otherwise race ahead of its own entry.
+	r.addSession(ctx, session)
+
+	go r.relayFromTarget(ctx, pc, session)
+	return nil
+}
+
 // resolveSession returns the relay session for a client session ID, building a
 // new one when the ID is unknown.
 //
-// A new session is only registered once its first packet has been validated, so
+// A new session is only admitted once its first packet has been validated, so
 // forged session IDs cannot make the server allocate sockets.
-func (s *UDPServer) resolveSession(sessionID uint64) (*udpRelaySession, bool, error) {
-	s.mu.Lock()
-	session, ok := s.sessions[sessionID]
-	s.mu.Unlock()
+func (r *udpRelay) resolveSession(sessionID uint64) (*UDPSession, bool, error) {
+	r.mu.Lock()
+	session, ok := r.sessions[sessionID]
+	r.mu.Unlock()
 
 	if ok {
 		return session, false, nil
 	}
 
-	clientCipher, err := s.cipher.NewSession(sessionID)
+	clientCipher, err := r.cipher.NewSession(sessionID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -214,36 +302,46 @@ func (s *UDPServer) resolveSession(sessionID uint64) (*udpRelaySession, bool, er
 	}
 
 	serverID := binary.BigEndian.Uint64(serverSessionID[:])
-	serverCipher, err := s.cipher.NewSession(serverID)
+	serverCipher, err := r.cipher.NewSession(serverID)
 	if err != nil {
 		return nil, false, err
 	}
 
-	return &udpRelaySession{
+	return &UDPSession{
 		clientSessionID: sessionID,
 		clientCipher:    clientCipher,
-		filter:          NewSlidingWindowFilter(s.FilterSize),
+		filter:          NewSlidingWindowFilter(r.options.FilterSize),
 		serverSessionID: serverID,
 		serverCipher:    serverCipher,
 		done:            make(chan struct{}),
 	}, true, nil
 }
 
-// addSession registers a started session, replacing any session that raced with it.
-func (s *UDPServer) addSession(session *udpRelaySession) {
-	s.mu.Lock()
-	previous, ok := s.sessions[session.clientSessionID]
-	s.sessions[session.clientSessionID] = session
-	s.mu.Unlock()
+// addSession publishes a started session, replacing any session that raced with it.
+func (r *udpRelay) addSession(ctx context.Context, session *UDPSession) {
+	r.mu.Lock()
+	previous, ok := r.sessions[session.clientSessionID]
+	r.sessions[session.clientSessionID] = session
+	r.mu.Unlock()
 
 	if ok && previous != session {
 		previous.close()
+		r.handler.OnSessionClose(ctx, previous, nil)
 	}
 }
 
+// removeSession drops a session that has ended on its own.
+func (r *udpRelay) removeSession(session *UDPSession) {
+	r.mu.Lock()
+	if current, ok := r.sessions[session.clientSessionID]; ok && current == session {
+		delete(r.sessions, session.clientSessionID)
+	}
+	r.mu.Unlock()
+}
+
 // purgeSessions closes relay sessions that have been idle past the NAT timeout.
-func (s *UDPServer) purgeSessions(ctx context.Context) {
-	timeout := s.sessionTimeout()
+func (r *udpRelay) purgeSessions(ctx context.Context) {
+	timeout := r.options.SessionTimeout
 	ticker := time.NewTicker(timeout / 2)
 	defer ticker.Stop()
 
@@ -252,52 +350,113 @@ func (s *UDPServer) purgeSessions(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s.mu.Lock()
-			for id, session := range s.sessions {
-				if now.Sub(session.lastSeenTime()) > timeout {
-					delete(s.sessions, id)
-					session.close()
+			var expired []*UDPSession
+
+			r.mu.Lock()
+			for id, session := range r.sessions {
+				if now.Sub(session.LastSeen()) > timeout {
+					delete(r.sessions, id)
+					expired = append(expired, session)
 				}
 			}
-			s.mu.Unlock()
+			r.mu.Unlock()
+
+			for _, session := range expired {
+				session.close()
+				r.handler.OnSessionClose(ctx, session, nil)
+			}
 		}
 	}
 }
 
 // closeSessions tears down every relay session.
-func (s *UDPServer) closeSessions() {
-	s.mu.Lock()
-	sessions := s.sessions
-	s.sessions = nil
-	s.mu.Unlock()
+func (r *udpRelay) closeSessions(ctx context.Context) {
+	r.mu.Lock()
+	sessions := r.sessions
+	r.sessions = nil
+	r.mu.Unlock()
 
 	for _, session := range sessions {
 		session.close()
+		r.handler.OnSessionClose(ctx, session, nil)
 	}
 }
 
-// removeSession drops a session that has ended on its own.
-func (s *UDPServer) removeSession(session *udpRelaySession) {
-	s.mu.Lock()
-	if current, ok := s.sessions[session.clientSessionID]; ok && current == session {
-		delete(s.sessions, session.clientSessionID)
+// relayFromTarget forwards datagrams from a session's outbound socket back to
+// the client.
+func (r *udpRelay) relayFromTarget(ctx context.Context, pc net.PacketConn, session *UDPSession) {
+	var cause error
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.handler.OnPanic(ctx, rec)
+			cause = fmt.Errorf("panic while relaying session %#x", session.clientSessionID)
+		}
+
+		r.removeSession(session)
+		session.close()
+		r.handler.OnSessionClose(ctx, session, cause)
+	}()
+
+	timeout := r.options.SessionTimeout
+
+	buf := internal.GetBytes(r.options.BufferSize)
+	defer internal.PutBytes(buf)
+
+	for {
+		select {
+		case <-session.done:
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// The session lives as long as either side is active, so the deadline
+		// follows the last client packet. Deriving it from this loop alone would
+		// tear down a session whose client is still sending to a silent target.
+		deadline := session.LastSeen().Add(timeout)
+		if !deadline.After(time.Now()) {
+			return
+		}
+
+		if err := session.out.SetReadDeadline(deadline); err != nil {
+			cause = err
+			return
+		}
+
+		n, src, err := session.out.ReadFromUDP(buf)
+		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				// The target has gone quiet; the client may not have.
+				continue
+			}
+			if !errors.Is(err, net.ErrClosed) {
+				cause = err
+			}
+			return
+		}
+
+		clientAddr := session.ClientAddr()
+		if clientAddr == nil {
+			continue
+		}
+
+		if err := session.writeToClient(pc, clientAddr, r.options.Padding, src, buf[:n]); err != nil {
+			r.handler.OnError(ctx, fmt.Errorf("replying to %s: %w", clientAddr, err))
+			continue
+		}
 	}
-	s.mu.Unlock()
 }
 
 // resolveTarget converts a target address from a packet header into a UDP address.
-func (s *UDPServer) resolveTarget(ctx context.Context, target Addr) (*net.UDPAddr, error) {
+func (r *udpRelay) resolveTarget(ctx context.Context, target Addr) (*net.UDPAddr, error) {
 	switch target.AddrType {
 	case AddrTypeIPv4, AddrTypeIPv6:
 		return &net.UDPAddr{IP: target.IP, Port: int(target.Port)}, nil
 
 	case AddrTypeDomain:
-		resolver := s.Resolver
-		if resolver == nil {
-			resolver = net.DefaultResolver
-		}
-
-		ips, err := resolver.LookupIP(ctx, "ip", target.Domain)
+		ips, err := r.options.Resolver.LookupIP(ctx, "ip", target.Domain)
 		if err != nil {
 			return nil, err
 		}
@@ -312,37 +471,8 @@ func (s *UDPServer) resolveTarget(ctx context.Context, target Addr) (*net.UDPAdd
 	}
 }
 
-func (s *UDPServer) bufferSize() int {
-	if s.BufferSize <= 0 {
-		return DefaultUDPBufferSize
-	}
-	return s.BufferSize
-}
-
-func (s *UDPServer) sessionTimeout() time.Duration {
-	if s.SessionTimeout < ReplayWindowDuration {
-		return ReplayWindowDuration
-	}
-	return s.SessionTimeout
-}
-
-func (s *UDPServer) padding() PaddingPolicy {
-	if s.Padding == nil {
-		return PadPlainDNS(MaxPaddingLength)
-	}
-	return s.Padding
-}
-
-func (s *UDPServer) onError(ctx context.Context, err error) {
-	if s.OnError != nil {
-		s.OnError(ctx, err)
-		return
-	}
-	slog.DebugContext(ctx, "udp relay", "error", err)
-}
-
-// udpRelaySession is one client session and the outbound socket serving it.
-type udpRelaySession struct {
+// UDPSession is one client relay session and the outbound socket serving it.
+type UDPSession struct {
 	clientSessionID uint64
 	clientCipher    *UDPSessionCipher
 
@@ -364,73 +494,38 @@ type udpRelaySession struct {
 	done      chan struct{}
 }
 
-// start opens the outbound socket and begins relaying replies to the client.
-func (s *udpRelaySession) start(ctx context.Context, server *UDPServer, pc net.PacketConn) error {
-	out, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return err
-	}
-	s.out = out
-
-	go s.relayFromTarget(ctx, server, pc)
-	return nil
+// ClientSessionID returns the session ID the client chose.
+func (s *UDPSession) ClientSessionID() uint64 {
+	return s.clientSessionID
 }
 
-// relayFromTarget forwards datagrams from the outbound socket back to the client.
-func (s *udpRelaySession) relayFromTarget(ctx context.Context, server *UDPServer, pc net.PacketConn) {
-	defer server.removeSession(s)
-	defer s.close()
+// ServerSessionID returns the session ID the server uses for its replies.
+func (s *UDPSession) ServerSessionID() uint64 {
+	return s.serverSessionID
+}
 
-	timeout := server.sessionTimeout()
-	padding := server.padding()
+// ClientAddr returns the address the last valid packet came from, which is
+// where replies are sent. It is nil before the first packet is accepted.
+func (s *UDPSession) ClientAddr() *net.UDPAddr {
+	return s.clientAddr.Load()
+}
 
-	buf := internal.GetBytes(server.bufferSize())
-	defer internal.PutBytes(buf)
+// LastSeen returns when the last valid client packet arrived.
+func (s *UDPSession) LastSeen() time.Time {
+	return time.Unix(0, s.lastSeen.Load())
+}
 
-	for {
-		select {
-		case <-s.done:
-			return
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		// The session lives as long as either side is active, so the deadline
-		// follows the last client packet. Deriving it from this loop alone would
-		// tear down a session whose client is still sending to a silent target.
-		deadline := s.lastSeenTime().Add(timeout)
-		if !deadline.After(time.Now()) {
-			return
-		}
-
-		if err := s.out.SetReadDeadline(deadline); err != nil {
-			return
-		}
-
-		n, src, err := s.out.ReadFromUDP(buf)
-		if err != nil {
-			if errors.Is(err, os.ErrDeadlineExceeded) {
-				// The target has gone quiet; the client may not have.
-				continue
-			}
-			return
-		}
-
-		clientAddr := s.clientAddr.Load()
-		if clientAddr == nil {
-			continue
-		}
-
-		if err := s.writeToClient(pc, clientAddr, padding, src, buf[:n]); err != nil {
-			server.onError(ctx, fmt.Errorf("replying to %s: %w", clientAddr, err))
-			continue
-		}
+// LocalAddr returns the local address of the session's outbound socket, or nil
+// before the session has been started.
+func (s *UDPSession) LocalAddr() net.Addr {
+	if s.out == nil {
+		return nil
 	}
+	return s.out.LocalAddr()
 }
 
 // writeToClient packs one reply and sends it to the client.
-func (s *udpRelaySession) writeToClient(
+func (s *UDPSession) writeToClient(
 	pc net.PacketConn,
 	clientAddr *net.UDPAddr,
 	padding PaddingPolicy,
@@ -478,30 +573,26 @@ func (s *udpRelaySession) writeToClient(
 }
 
 // filterIsOk reports whether a packet ID would be accepted by the session window.
-func (s *udpRelaySession) filterIsOk(packetID uint64) bool {
+func (s *UDPSession) filterIsOk(packetID uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.filter.IsOk(packetID)
 }
 
 // filterAdd records a validated packet ID in the session window.
-func (s *udpRelaySession) filterAdd(packetID uint64) {
+func (s *UDPSession) filterAdd(packetID uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.filter.Add(packetID)
 }
 
 // touch records the time and source address of the last valid client packet.
-func (s *udpRelaySession) touch(now time.Time, clientAddr *net.UDPAddr) {
+func (s *UDPSession) touch(now time.Time, clientAddr *net.UDPAddr) {
 	s.lastSeen.Store(now.UnixNano())
 	s.clientAddr.Store(clientAddr)
 }
 
-func (s *udpRelaySession) lastSeenTime() time.Time {
-	return time.Unix(0, s.lastSeen.Load())
-}
-
-func (s *udpRelaySession) close() {
+func (s *UDPSession) close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
 		if s.out != nil {

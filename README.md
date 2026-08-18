@@ -389,8 +389,8 @@ func main() {
 
 	// UDP relay on the same port.
 	go func() {
-		udp := &shadowsocks.UDPServer{Config: cfg}
-		log.Fatal(udp.ListenAndServe(context.Background(), ":8388"))
+		udp := &shadowsocks.BaseUDPServerHandler{Config: cfg, AllowRelay: true}
+		log.Fatal(shadowsocks.ListenAndServePacket(context.Background(), ":8388", udp))
 	}()
 
 	log.Println("Shadowsocks 2022 server listening on :8388")
@@ -402,6 +402,33 @@ Requests are validated before anything is relayed: the header type, a timestamp
 within 30 seconds of system time, and a salt that has not been seen in the last
 60 seconds. A connection that fails any of these is drained rather than closed,
 so a prober cannot learn how many bytes the server consumed.
+
+Both servers take a handler, `ServerHandler` for TCP and `UDPServerHandler` for
+UDP, with `BaseServerHandler` and `BaseUDPServerHandler` covering the usual
+cases. The UDP handler decides policy and placement per session:
+
+```go
+handler := &shadowsocks.BaseUDPServerHandler{
+	Config:     cfg,
+	AllowRelay: true,
+
+	// Source address outbound sockets bind to.
+	OutboundAddr: &net.UDPAddr{IP: net.ParseIP("2001:db8::1")},
+
+	// Called for every validated packet, before name resolution.
+	TargetAuthorizer: func(ctx context.Context, session *shadowsocks.UDPSession, target shadowsocks.Addr, payload []byte) error {
+		if target.Port == 25 {
+			return fmt.Errorf("smtp not allowed")
+		}
+		return nil
+	},
+}
+```
+
+Implement `UDPServerHandler` directly for more control: `OnSession` admits or
+rejects a session, `ListenPacket` supplies its outbound socket, `OnPacket`
+screens each datagram, and `OnSessionClose`, `OnError` and `OnPanic` report what
+happens. A panic in any of them is contained rather than taking down the relay.
 
 ### Shadowsocks Client (TCP)
 
@@ -487,7 +514,7 @@ Header padding hides the length of small messages. The policy is configurable:
 
 ```go
 dialer.Padding = shadowsocks.PadWhenEmpty(shadowsocks.MaxPaddingLength) // default for TCP
-udpServer.Padding = shadowsocks.PadPlainDNS(shadowsocks.MaxPaddingLength) // default for UDP
+udpHandler.Padding = shadowsocks.PadPlainDNS(shadowsocks.MaxPaddingLength) // default for UDP
 ```
 
 `PadWhenEmpty` pads only requests that carry no initial payload, which the

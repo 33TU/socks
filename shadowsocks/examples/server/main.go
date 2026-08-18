@@ -60,13 +60,14 @@ func main() {
 
 	if *udp {
 		g.Go(func() error {
-			server := &shadowsocks.UDPServer{
+			handler := &shadowsocks.BaseUDPServerHandler{
 				Config:         cfg,
+				AllowRelay:     true,
 				SessionTimeout: 5 * time.Minute,
 			}
 
 			slog.Info("shadowsocks UDP relay listening", "address", *listen)
-			return server.ListenAndServe(ctx, *listen)
+			return shadowsocks.ListenAndServePacket(ctx, *listen, handler)
 		})
 	}
 

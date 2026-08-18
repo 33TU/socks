@@ -49,13 +49,13 @@ func startUDPRelay(t *testing.T, cfg *shadowsocks.Config) (addr string, stop fun
 		t.Fatalf("listen udp relay: %v", err)
 	}
 
-	server := &shadowsocks.UDPServer{Config: cfg}
+	handler := &shadowsocks.BaseUDPServerHandler{Config: cfg, AllowRelay: true}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = server.Serve(ctx, pc)
+		_ = shadowsocks.ServePacket(ctx, pc, handler)
 	}()
 
 	return pc.LocalAddr().String(), func() {
