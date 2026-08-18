@@ -3,7 +3,7 @@ module github.com/33TU/socks/shadowsocks
 go 1.25.1
 
 require (
-	github.com/33TU/socks v0.3.0
+	github.com/33TU/socks v0.3.1
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.50.0
 	golang.org/x/sync v0.20.0
