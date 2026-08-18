@@ -418,6 +418,15 @@ func BenchmarkUDPRelayRoundTrip(b *testing.B) {
 	}
 }
 
+// Batching these system calls was tried and rejected. recvmmsg collected
+// nearly a full batch, 29.8 datagrams per call, and was still slower per
+// datagram than plain reads, 299ns against 247ns: a receive is mostly the
+// copy, not the call, and the per-message setup costs more than the calls it
+// saves. sendmmsg did win, 1060ns against 1279ns, but only 17%, because a send
+// is mostly delivery work that batching does not avoid. Neither pays for the
+// dependency, the buffers, or the machinery to coalesce writes across the
+// session goroutines. Measured on loopback; a real interface may differ.
+//
 // BenchmarkRawUDPSend is the floor: one sendto per datagram, no crypto, no
 // relay. Whatever the relay costs, it cannot beat this per packet.
 func BenchmarkRawUDPSend(b *testing.B) {
