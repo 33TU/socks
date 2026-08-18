@@ -1,8 +1,10 @@
 package net
 
 import (
+	"errors"
 	"io"
 	"net"
+	"os"
 	"time"
 
 	"github.com/33TU/socks/internal"
@@ -39,11 +41,6 @@ func CopyConn(dst, src net.Conn, timeout time.Duration, bufSize int) error {
 		}
 	}()
 
-	if timeout == 0 {
-		_, err := io.Copy(dst, src)
-		return err
-	}
-
 	if bufSize <= 0 {
 		bufSize = 1024 * 32 // default buffer size for io.CopyBuffer
 	}
@@ -51,20 +48,35 @@ func CopyConn(dst, src net.Conn, timeout time.Duration, bufSize int) error {
 	buf := internal.GetBuffer(bufSize)
 	defer internal.PutBuffer(buf)
 
+	// The deadline outlives this call otherwise, and src belongs to the caller.
+	defer src.SetDeadline(time.Time{})
+
+	if timeout == 0 {
+		_, err := io.CopyBuffer(dst, src, buf.B)
+		return err
+	}
+
+	// The copy stays inside io.CopyBuffer even with a timeout, because that is
+	// what lets the kernel splice one connection into the other: reading and
+	// writing here instead costs more than half the throughput.
+	//
+	// Idleness is enforced around the copy rather than inside it. Each round
+	// runs until the deadline, and a round that moved nothing at all is the
+	// idle one. A round that moved something starts another, so a connection
+	// can sit idle for up to twice the timeout before it is given up on.
 	for {
 		if err := src.SetDeadline(time.Now().Add(timeout)); err != nil {
 			return err
 		}
 
-		n, err := src.Read(buf.B)
-		if err == io.EOF {
+		n, err := io.CopyBuffer(dst, src, buf.B)
+		if err == nil || errors.Is(err, io.EOF) {
 			return nil
 		}
-		if err != nil {
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
 			return err
 		}
-
-		if _, err := dst.Write(buf.B[:n]); err != nil {
+		if n == 0 {
 			return err
 		}
 	}
