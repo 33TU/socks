@@ -36,6 +36,10 @@ type BaseUDPServerHandler struct {
 	// AllowRelay reports whether packets may be relayed at all.
 	AllowRelay bool
 
+	// Users, when set, serves many users on one port through identity headers,
+	// as on the TCP side.
+	Users *UserTable
+
 	// OutboundAddr is the local address outbound sockets bind to.
 	// Nil lets the system choose, which is the usual setting.
 	OutboundAddr *net.UDPAddr
@@ -57,6 +61,11 @@ func (d *BaseUDPServerHandler) Cipher(ctx context.Context) (*ServerCipher, error
 		// UDP replay protection is per session, through the sliding window
 		// filter, so no salt cache is involved.
 		d.cipher, d.cipherErr = NewServerCipher(d.Config, nil)
+		if d.cipherErr == nil && d.Users != nil {
+			d.cipher.IdentityPSK = d.cipher.PSK
+			d.cipher.PSK = nil
+			d.cipher.Users = d.Users
+		}
 	})
 
 	return d.cipher, d.cipherErr

@@ -211,7 +211,7 @@ func TestServer_RejectsReplayedRequestStart(t *testing.T) {
 	salt := bytes.Repeat([]byte{0x5a}, method.SaltSize)
 	var buf bytes.Buffer
 	if _, _, err := shadowsocks.WriteTCPRequestStart(
-		&buf, method, psk, salt, time.Now(), target,
+		&buf, shadowsocks.ClientKeys{Method: method, PSK: psk}, salt, time.Now(), target,
 		bytes.Repeat([]byte{0x00}, 8), []byte("ping"),
 	); err != nil {
 		t.Fatalf("WriteTCPRequestStart() error = %v", err)
@@ -270,7 +270,7 @@ func TestServer_RejectsStaleTimestamp(t *testing.T) {
 	salt := bytes.Repeat([]byte{0x11}, method.SaltSize)
 	var buf bytes.Buffer
 	if _, _, err := shadowsocks.WriteTCPRequestStart(
-		&buf, method, psk, salt,
+		&buf, shadowsocks.ClientKeys{Method: method, PSK: psk}, salt,
 		time.Now().Add(-5*time.Minute), // well outside the 30s window
 		target, bytes.Repeat([]byte{0x00}, 8), []byte("ping"),
 	); err != nil {

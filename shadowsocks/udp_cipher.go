@@ -75,7 +75,7 @@ func NewUDPCipher(method Method, psk []byte) (*UDPCipher, error) {
 			return nil, fmt.Errorf("create XChaCha20-Poly1305: %w", err)
 		}
 		c.aead = aead
-		c.pskSession = &UDPSessionCipher{cipher: c, aead: aead}
+		c.pskSession = &UDPSessionCipher{cipher: c, psk: c.psk, aead: aead}
 
 	default:
 		return nil, fmt.Errorf("unsupported method kind: %d", method.Kind)
@@ -139,7 +139,7 @@ func (c *UDPCipher) NewSession(sessionID uint64) (*UDPSessionCipher, error) {
 		return nil, fmt.Errorf("nil UDP cipher")
 	}
 
-	s := &UDPSessionCipher{cipher: c, sessionID: sessionID}
+	s := &UDPSessionCipher{cipher: c, sessionID: sessionID, psk: c.psk}
 
 	if !c.HasSeparateHeader() {
 		// The PSK opens every packet; sessions share one AEAD.
@@ -171,12 +171,57 @@ func (c *UDPCipher) NewSession(sessionID uint64) (*UDPSessionCipher, error) {
 type UDPSessionCipher struct {
 	cipher    *UDPCipher
 	sessionID uint64
+	psk       []byte
 	aead      cipher.AEAD
 }
 
 // SessionID returns the session this cipher belongs to.
 func (s *UDPSessionCipher) SessionID() uint64 {
 	return s.sessionID
+}
+
+// SealToWithIdentity encrypts a packet as SealTo does, with an identity header
+// per identity PSK between the separate header and the body.
+//
+// The separate header is encrypted with the first identity PSK rather than the
+// session's own, which is what lets the first hop route the packet.
+func (s *UDPSessionCipher) SealToWithIdentity(dst []byte, packetID uint64, body []byte, identityPSKs [][]byte) ([]byte, error) {
+	if len(identityPSKs) == 0 {
+		return s.SealTo(dst, packetID, body)
+	}
+	if s == nil || s.aead == nil {
+		return nil, fmt.Errorf("nil UDP session cipher")
+	}
+	if !s.cipher.HasSeparateHeader() {
+		return nil, fmt.Errorf("identity headers need a method with a separate header")
+	}
+
+	var separate [UDPSeparateHeaderLen]byte
+	binary.BigEndian.PutUint64(separate[:UDPSessionIDLen], s.sessionID)
+	binary.BigEndian.PutUint64(separate[UDPSessionIDLen:], packetID)
+
+	nonce := separate[UDPSeparateHeaderLen-AeadNonceSize:]
+
+	start := len(dst)
+	dst = append(dst, separate[:]...)
+
+	// The headers mask their hashes with the plaintext separate header, so they
+	// have to be written before it is encrypted.
+	dst, err := EncodeUDPIdentityHeadersTo(dst, identityPSKs, s.psk, separate[:])
+	if err != nil {
+		return nil, err
+	}
+
+	dst = s.aead.Seal(dst, nonce, body, nil)
+
+	// Encrypted with the outermost identity key, not the session key.
+	outer, err := aes.NewCipher(identityPSKs[0])
+	if err != nil {
+		return nil, fmt.Errorf("create identity cipher: %w", err)
+	}
+	outer.Encrypt(dst[start:start+UDPSeparateHeaderLen], dst[start:start+UDPSeparateHeaderLen])
+
+	return dst, nil
 }
 
 // SealTo encrypts a packet carrying body as packetID and appends it to dst.
@@ -263,6 +308,24 @@ func (s *UDPSessionCipher) OpenTo(dst, packet []byte) (sessionID, packetID uint6
 	}
 
 	return sessionID, packetID, body, nil
+}
+
+// OpenBodyTo decrypts a packet body whose separate header has already been
+// decrypted, as it has when identity headers were processed first.
+//
+// separateHeader is the plaintext session and packet ID, which supplies the nonce.
+func (s *UDPSessionCipher) OpenBodyTo(dst, ciphertext, separateHeader []byte) ([]byte, error) {
+	if s == nil || s.aead == nil {
+		return nil, fmt.Errorf("nil UDP session cipher")
+	}
+	if len(separateHeader) != UDPSeparateHeaderLen {
+		return nil, fmt.Errorf("invalid separate header length: got %d, want %d", len(separateHeader), UDPSeparateHeaderLen)
+	}
+	if len(ciphertext) < s.cipher.Method.TagSize {
+		return nil, ErrShortUDPPacket
+	}
+
+	return s.aead.Open(dst, separateHeader[UDPSeparateHeaderLen-AeadNonceSize:], ciphertext, nil)
 }
 
 // UDPUnpacked is a decrypted UDP packet.

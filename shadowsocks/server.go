@@ -11,13 +11,52 @@ import (
 )
 
 // ServerCipher holds the crypto state a server uses to accept proxy connections.
+//
+// A single-user server sets PSK. A server sharing one port between users sets
+// IdentityPSK and Users instead: each request carries an identity header naming
+// its user, and that user's PSK protects the session.
 type ServerCipher struct {
 	Method Method
 	PSK    []byte
 
+	// IdentityPSK is the key this server is known by, which decrypts the
+	// identity header naming the user. It is required when Users is set.
+	IdentityPSK []byte
+
+	// Users are the users this server accepts, looked up by identity header.
+	Users *UserTable
+
 	// Replay stores request salts seen within the replay window. It may be nil
 	// to disable replay protection, which the protocol otherwise mandates.
 	Replay *ReplayCache
+}
+
+// MultiUser reports whether requests are expected to carry an identity header.
+func (c *ServerCipher) MultiUser() bool {
+	return c != nil && c.Users != nil
+}
+
+// SessionPSK returns the PSK protecting a session, and the user it belongs to.
+//
+// For a multi-user server the identity header is decrypted with IdentityPSK and
+// the user it names is looked up; salt is the request's salt, which binds the
+// header to the session.
+func (c *ServerCipher) SessionPSK(identityHeader, salt []byte) ([]byte, User, error) {
+	if !c.MultiUser() {
+		return c.PSK, User{}, nil
+	}
+
+	named, err := DecodeTCPIdentityHeader(identityHeader, c.Method, c.IdentityPSK, salt)
+	if err != nil {
+		return nil, User{}, err
+	}
+
+	user, ok := c.Users.Lookup(named)
+	if !ok {
+		return nil, User{}, ErrUnknownUser
+	}
+
+	return user.PSK, user, nil
 }
 
 // Validate checks whether the server cipher is internally valid.
@@ -28,9 +67,21 @@ func (c *ServerCipher) Validate() error {
 	if err := c.Method.Validate(); err != nil {
 		return err
 	}
+
+	if c.MultiUser() {
+		if len(c.IdentityPSK) != c.Method.KeySize {
+			return fmt.Errorf("invalid identity PSK length: got %d, want %d", len(c.IdentityPSK), c.Method.KeySize)
+		}
+		if c.Users.Len() == 0 {
+			return fmt.Errorf("no users registered")
+		}
+		return nil
+	}
+
 	if len(c.PSK) != c.Method.KeySize {
 		return fmt.Errorf("invalid PSK length: got %d, want %d", len(c.PSK), c.Method.KeySize)
 	}
+
 	return nil
 }
 
@@ -142,7 +193,7 @@ func ServeConn(ctx context.Context, handler ServerHandler, conn net.Conn) (err e
 		return err
 	}
 
-	ssConn, req, err := NewServerTCPConn(conn, cipher.Method, cipher.PSK, time.Now(), cipher.Replay)
+	ssConn, req, err := NewServerTCPConn(conn, cipher, time.Now())
 	if err != nil {
 		// Any failure here must look identical from the outside, whatever the
 		// cause and however many bytes were consumed.

@@ -184,7 +184,7 @@ func (d *Dialer) Dial(network, address string) (net.Conn, error) {
 
 // DialConnContext upgrades an existing connection into a Shadowsocks TCP stream.
 func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, address string) (net.Conn, error) {
-	method, psk, err := d.clientCipher()
+	keys, err := d.clientKeys()
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -207,7 +207,7 @@ func (d *Dialer) DialConnContext(ctx context.Context, conn net.Conn, network, ad
 	}
 	defer internal.PutBytes(padding)
 
-	ssConn, err := NewClientTCPConn(conn, method, psk, target, padding, nil)
+	ssConn, err := NewClientTCPConn(conn, keys, target, padding, nil)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -227,10 +227,12 @@ func (d *Dialer) DialConn(conn net.Conn, network, address string) (net.Conn, err
 // session is used for the life of the connection, so callers that need separate
 // sessions should open separate connections.
 func (d *Dialer) ListenPacket(ctx context.Context, cfg *UDPConnConfig) (*UDPConn, error) {
-	method, psk, err := d.clientCipher()
+	keys, err := d.clientKeys()
 	if err != nil {
 		return nil, err
 	}
+
+	method, psk := keys.Method, keys.PSK
 
 	serverAddr, err := net.ResolveUDPAddr("udp", d.ProxyAddr)
 	if err != nil {
@@ -243,6 +245,13 @@ func (d *Dialer) ListenPacket(ctx context.Context, cfg *UDPConnConfig) (*UDPConn
 		return nil, err
 	}
 
+	if cfg == nil {
+		cfg = &UDPConnConfig{}
+	}
+	if cfg.IdentityPSKs == nil {
+		cfg.IdentityPSKs = keys.IdentityPSKs
+	}
+
 	conn, err := NewUDPConn(pc, serverAddr, method, psk, cfg)
 	if err != nil {
 		pc.Close()
@@ -252,29 +261,41 @@ func (d *Dialer) ListenPacket(ctx context.Context, cfg *UDPConnConfig) (*UDPConn
 	return conn, nil
 }
 
-// clientCipher returns the method and PSK from the dialer's config.
-func (d *Dialer) clientCipher() (Method, []byte, error) {
+// clientKeys returns the key chain from the dialer's config.
+func (d *Dialer) clientKeys() (ClientKeys, error) {
 	if d == nil {
-		return Method{}, nil, fmt.Errorf("nil shadowsocks dialer")
+		return ClientKeys{}, fmt.Errorf("nil shadowsocks dialer")
 	}
 	if d.Config == nil {
-		return Method{}, nil, fmt.Errorf("missing shadowsocks config")
+		return ClientKeys{}, fmt.Errorf("missing shadowsocks config")
 	}
 	if err := d.Config.Validate(); err != nil {
-		return Method{}, nil, err
+		return ClientKeys{}, err
 	}
 
 	method, err := ParseMethod(d.Config.Method)
 	if err != nil {
-		return Method{}, nil, err
+		return ClientKeys{}, err
 	}
 
-	psk, err := DecodePSKTo(nil, method, d.Config.PSK)
-	if err != nil {
-		return Method{}, nil, err
+	list := d.Config.PSKList()
+	keys := ClientKeys{Method: method}
+
+	for i, encoded := range list {
+		psk, err := DecodePSKTo(nil, method, encoded)
+		if err != nil {
+			return ClientKeys{}, err
+		}
+
+		// Everything before the last key names the path to it.
+		if i == len(list)-1 {
+			keys.PSK = psk
+		} else {
+			keys.IdentityPSKs = append(keys.IdentityPSKs, psk)
+		}
 	}
 
-	return method, psk, nil
+	return keys, keys.Validate()
 }
 
 // buildPadding returns random padding for a request header according to the

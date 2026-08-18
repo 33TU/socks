@@ -36,8 +36,7 @@ type TCPConn struct {
 // chunks are written to conn in a single write call.
 func NewClientTCPConn(
 	conn net.Conn,
-	method Method,
-	psk []byte,
+	keys ClientKeys,
 	target Addr,
 	padding []byte,
 	initialPayload []byte,
@@ -45,15 +44,14 @@ func NewClientTCPConn(
 	if conn == nil {
 		return nil, fmt.Errorf("nil net.Conn")
 	}
-	if err := method.Validate(); err != nil {
+	if err := keys.Validate(); err != nil {
 		return nil, err
-	}
-	if len(psk) != method.KeySize {
-		return nil, fmt.Errorf("invalid PSK length: got %d, want %d", len(psk), method.KeySize)
 	}
 	if err := target.Validate(); err != nil {
 		return nil, err
 	}
+
+	method, psk := keys.Method, keys.PSK
 
 	requestSalt := make([]byte, method.SaltSize)
 	if err := FillSaltTo(requestSalt, method); err != nil {
@@ -62,8 +60,7 @@ func NewClientTCPConn(
 
 	requestCipher, _, err := WriteTCPRequestStart(
 		conn,
-		method,
-		psk,
+		keys,
 		requestSalt,
 		time.Now(),
 		target,
@@ -93,25 +90,29 @@ func NewClientTCPConn(
 // The request timestamp is checked against now and its salt against replay,
 // which may be nil to skip the replay check. The response stream is started on
 // the first Write.
-func NewServerTCPConn(conn net.Conn, method Method, psk []byte, now time.Time, replay *ReplayCache) (*TCPConn, *ParsedTCPRequestStart, error) {
+func NewServerTCPConn(conn net.Conn, cipher *ServerCipher, now time.Time) (*TCPConn, *ParsedTCPRequestStart, error) {
 	if conn == nil {
 		return nil, nil, fmt.Errorf("nil net.Conn")
 	}
-	if err := method.Validate(); err != nil {
+	if err := cipher.Validate(); err != nil {
 		return nil, nil, err
 	}
-	if len(psk) != method.KeySize {
-		return nil, nil, fmt.Errorf("invalid PSK length: got %d, want %d", len(psk), method.KeySize)
-	}
 
-	reqStart, _, err := ReadTCPRequestStart(conn, method, psk, now, replay)
+	reqStart, _, err := ReadTCPRequestStart(conn, cipher, now)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// The response stream is protected by the session's own PSK, which for a
+	// multi-user server is the identified user's rather than the server's.
+	psk := cipher.PSK
+	if reqStart.User.PSK != nil {
+		psk = reqStart.User.PSK
+	}
+
 	c := &TCPConn{
 		Conn:            conn,
-		method:          method,
+		method:          cipher.Method,
 		psk:             append([]byte(nil), psk...),
 		requestSalt:     reqStart.Salt,
 		responsePending: true,

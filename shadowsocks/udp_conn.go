@@ -38,6 +38,10 @@ type UDPConnConfig struct {
 	// FilterSize is the sliding window size used to reject replayed packets.
 	// Zero means DefaultSlidingWindowFilterSize.
 	FilterSize uint64
+
+	// IdentityPSKs are the keys naming the path to this client's user PSK,
+	// outermost first. Set them to reach a multi-user server or a relay.
+	IdentityPSKs [][]byte
 }
 
 // udpServerSession is the client's view of one server relay session.
@@ -65,9 +69,10 @@ type UDPConn struct {
 	bufferSize int
 	filterSize uint64
 
-	sessionID uint64
-	session   *UDPSessionCipher
-	packetID  atomic.Uint64
+	sessionID    uint64
+	session      *UDPSessionCipher
+	identityPSKs [][]byte
+	packetID     atomic.Uint64
 
 	// mu guards the server session state, and is held from routing an incoming
 	// packet to a session through recording it in that session's filter.
@@ -95,12 +100,13 @@ func NewUDPConn(conn net.PacketConn, serverAddr net.Addr, method Method, psk []b
 	}
 
 	c := &UDPConn{
-		conn:       conn,
-		serverAddr: serverAddr,
-		cipher:     cipher,
-		padding:    cfg.Padding,
-		bufferSize: cfg.BufferSize,
-		filterSize: cfg.FilterSize,
+		conn:         conn,
+		serverAddr:   serverAddr,
+		cipher:       cipher,
+		padding:      cfg.Padding,
+		bufferSize:   cfg.BufferSize,
+		filterSize:   cfg.FilterSize,
+		identityPSKs: cfg.IdentityPSKs,
 	}
 
 	if c.padding == nil {
@@ -158,10 +164,10 @@ func (c *UDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	}
 	body = append(body, p...)
 
-	packet := internal.GetBytes(c.cipher.PacketOverhead() + len(body))[:0]
+	packet := internal.GetBytes(c.cipher.PacketOverhead() + len(c.identityPSKs)*IdentityHeaderLen + len(body))[:0]
 	defer internal.PutBytes(packet)
 
-	if packet, err = c.session.SealTo(packet, c.packetID.Add(1)-1, body); err != nil {
+	if packet, err = c.session.SealToWithIdentity(packet, c.packetID.Add(1)-1, body, c.identityPSKs); err != nil {
 		return 0, err
 	}
 

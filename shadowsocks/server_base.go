@@ -32,6 +32,11 @@ type BaseServerHandler struct {
 	// When nil, a cache is created on first use.
 	ReplayCache *ReplayCache
 
+	// Users, when set, serves many users on one port. Config's PSK is then the
+	// server's identity key rather than a session key, and each request carries
+	// an identity header naming which user's PSK protects it.
+	Users *UserTable
+
 	RequestTimeout     time.Duration
 	ConnectConnTimeout time.Duration
 	ConnectBufferSize  int
@@ -55,6 +60,12 @@ func (d *BaseServerHandler) Cipher(ctx context.Context) (*ServerCipher, error) {
 			replay = NewReplayCache()
 		}
 		d.cipher, d.cipherErr = NewServerCipher(d.Config, replay)
+		if d.cipherErr == nil && d.Users != nil {
+			// The configured key identifies the server, not a session.
+			d.cipher.IdentityPSK = d.cipher.PSK
+			d.cipher.PSK = nil
+			d.cipher.Users = d.Users
+		}
 	})
 
 	return d.cipher, d.cipherErr

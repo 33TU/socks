@@ -97,7 +97,11 @@ func startUDPRelayWithHandler(t *testing.T, handler shadowsocks.UDPServerHandler
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = shadowsocks.ServePacket(ctx, pc, handler)
+		// Surfacing this matters: a relay that fails to start looks exactly
+		// like one that drops every packet.
+		if err := shadowsocks.ServePacket(ctx, pc, handler); err != nil && ctx.Err() == nil {
+			t.Errorf("ServePacket() error = %v", err)
+		}
 	}()
 
 	return pc.LocalAddr().String(), func() {

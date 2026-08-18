@@ -20,6 +20,9 @@ type ParsedTCPRequestStart struct {
 	Cipher *TCPStreamCipher
 	Fixed  TCPRequestFixedHeader
 	Header TCPRequestVariableHeader
+
+	// User is the user an identity header named, empty on a single-user server.
+	User User
 }
 
 func (s *ParsedTCPRequestStart) Validate(method Method) error {
@@ -89,11 +92,44 @@ func (s *ParsedTCPResponseStart) Validate(method Method, expectedRequestSalt []b
 	return nil
 }
 
-// WriteTCPRequestStart writes request salt, encrypted fixed header, and encrypted variable header.
-func WriteTCPRequestStart(dst io.Writer, method Method, psk, requestSalt []byte, timestamp time.Time, target Addr, padding, initialData []byte) (*TCPStreamCipher, int64, error) {
-	if err := method.Validate(); err != nil {
+// ClientKeys are the keys a client authenticates with.
+//
+// PSK protects the session. IdentityPSKs, when present, are the keys naming the
+// path to it: each gets an identity header naming the key after it, so a relay
+// or multi-user server can route the request without holding PSK itself.
+type ClientKeys struct {
+	Method       Method
+	IdentityPSKs [][]byte
+	PSK          []byte
+}
+
+// Validate checks whether the key chain is internally valid.
+func (k ClientKeys) Validate() error {
+	if err := k.Method.Validate(); err != nil {
+		return err
+	}
+	if len(k.PSK) != k.Method.KeySize {
+		return fmt.Errorf("invalid PSK length: got %d, want %d", len(k.PSK), k.Method.KeySize)
+	}
+
+	for i, identityPSK := range k.IdentityPSKs {
+		if len(identityPSK) != k.Method.KeySize {
+			return fmt.Errorf("invalid identity PSK %d length: got %d, want %d", i, len(identityPSK), k.Method.KeySize)
+		}
+	}
+
+	return nil
+}
+
+// WriteTCPRequestStart writes request salt, any identity headers, the encrypted
+// fixed header, and the encrypted variable header, in a single write.
+func WriteTCPRequestStart(dst io.Writer, keys ClientKeys, requestSalt []byte, timestamp time.Time, target Addr, padding, initialData []byte) (*TCPStreamCipher, int64, error) {
+	if err := keys.Validate(); err != nil {
 		return nil, 0, err
 	}
+
+	method, psk := keys.Method, keys.PSK
+
 	requestCipher, err := NewTCPStreamCipherFromPSK(method, psk, requestSalt)
 	if err != nil {
 		return nil, 0, err
@@ -119,6 +155,12 @@ func WriteTCPRequestStart(dst io.Writer, method Method, psk, requestSalt []byte,
 	out := stackBuf[:0]
 	out = append(out, requestSalt...)
 
+	// Identity headers sit between the salt and the AEAD chunks.
+	out, err = EncodeTCPIdentityHeadersTo(out, method, keys.IdentityPSKs, psk, requestSalt)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	out, err = requestCipher.EncodeRequestFixedHeaderTo(out, &fixedHeader, plainScratch[:0])
 	if err != nil {
 		return nil, 0, err
@@ -138,19 +180,25 @@ func WriteTCPRequestStart(dst io.Writer, method Method, psk, requestSalt []byte,
 // required for detection prevention. The header timestamp is checked against now,
 // and the request salt is checked against replay, which may be nil to skip the
 // replay check.
-func ReadTCPRequestStart(src io.Reader, method Method, psk []byte, now time.Time, replay *ReplayCache) (*ParsedTCPRequestStart, int64, error) {
+func ReadTCPRequestStart(src io.Reader, cipher *ServerCipher, now time.Time) (*ParsedTCPRequestStart, int64, error) {
 	var total int64
-	if err := method.Validate(); err != nil {
+	if err := cipher.Validate(); err != nil {
 		return nil, 0, err
 	}
-	if len(psk) != method.KeySize {
-		return nil, 0, fmt.Errorf("invalid PSK length: got %d, want %d", len(psk), method.KeySize)
+
+	method := cipher.Method
+
+	// A multi-user server expects one identity header naming the user, which is
+	// read together with everything else so the read pattern never varies.
+	identityLen := 0
+	if cipher.MultiUser() {
+		identityLen = IdentityHeaderLen
 	}
 
 	// The salt and the fixed-length header must be read in one call so that the
 	// number of bytes consumed never depends on how far validation got.
 	encFixedLen := TCPRequestFixedHeaderLen + method.TagSize
-	startBuf := internal.GetBytes(method.SaltSize + encFixedLen)
+	startBuf := internal.GetBytes(method.SaltSize + identityLen + encFixedLen)
 	defer internal.PutBytes(startBuf)
 	n, err := io.ReadFull(src, startBuf)
 	total += int64(n)
@@ -158,7 +206,14 @@ func ReadTCPRequestStart(src io.Reader, method Method, psk []byte, now time.Time
 		return nil, total, err
 	}
 
-	requestSaltBuf, encFixed := startBuf[:method.SaltSize], startBuf[method.SaltSize:]
+	requestSaltBuf := startBuf[:method.SaltSize]
+	identityHeader := startBuf[method.SaltSize : method.SaltSize+identityLen]
+	encFixed := startBuf[method.SaltSize+identityLen:]
+
+	psk, user, err := cipher.SessionPSK(identityHeader, requestSaltBuf)
+	if err != nil {
+		return nil, total, err
+	}
 
 	requestCipher, err := NewTCPStreamCipherFromPSK(method, psk, requestSaltBuf)
 	if err != nil {
@@ -178,7 +233,7 @@ func ReadTCPRequestStart(src io.Reader, method Method, psk []byte, now time.Time
 
 	// Salts are only stored once the message is known to be authentic and fresh,
 	// so unauthenticated traffic cannot fill the cache.
-	if replay != nil && replay.SeenOrAdd(requestSaltBuf, now, ReplayWindowDuration) {
+	if cipher.Replay != nil && cipher.Replay.SeenOrAdd(requestSaltBuf, now, ReplayWindowDuration) {
 		return nil, total, ErrReplayDetected
 	}
 
@@ -202,6 +257,7 @@ func ReadTCPRequestStart(src io.Reader, method Method, psk []byte, now time.Time
 		Cipher: requestCipher,
 		Fixed:  fixedHeader,
 		Header: variableHeader,
+		User:   user,
 	}
 	if err := parsed.Validate(method); err != nil {
 		return nil, total, err

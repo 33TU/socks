@@ -2,6 +2,7 @@ package shadowsocks_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"net"
 	"testing"
@@ -127,8 +128,7 @@ func TestWireVector_TCPRequestStart(t *testing.T) {
 			var buf bytes.Buffer
 			if _, _, err := shadowsocks.WriteTCPRequestStart(
 				&buf,
-				method,
-				vectorPSK(method),
+				shadowsocks.ClientKeys{Method: method, PSK: vectorPSK(method)},
 				bytes.Repeat([]byte{0x77}, method.SaltSize),
 				vectorTime,
 				target,
@@ -157,7 +157,7 @@ func TestWireVector_TCPRequestStartFromReference(t *testing.T) {
 
 			wire := bytes.NewReader(mustHex(t, v.tcpRequestStartReference))
 
-			parsed, _, err := shadowsocks.ReadTCPRequestStart(wire, method, vectorPSK(method), vectorTime, nil)
+			parsed, _, err := shadowsocks.ReadTCPRequestStart(wire, &shadowsocks.ServerCipher{Method: method, PSK: vectorPSK(method)}, vectorTime)
 			if err != nil {
 				t.Fatalf("ReadTCPRequestStart() error = %v", err)
 			}
@@ -330,5 +330,75 @@ func TestWireVector_UDPServerPacketFromReference(t *testing.T) {
 				t.Errorf("payload = %q, want %q", body[n:], "response bytes")
 			}
 		})
+	}
+}
+
+// Identity headers for a two-layer chain, checked byte for byte against the
+// reference implementation before being frozen here. Inputs: aes-128-gcm,
+// iPSK0/iPSK1/uPSK seeded 1/2/3, salt of 0x42 repeated.
+const identityHeadersAES128 = "424c76a704df58731af64062f3d154a668095017ec636dee6e0ca5f976ae3587"
+
+// TestWireVector_TCPIdentityHeaders checks that identity headers still encode
+// exactly as the reference implementation produces them.
+func TestWireVector_TCPIdentityHeaders(t *testing.T) {
+	method, err := shadowsocks.ParseMethod(shadowsocks.Method2022Blake3AES128GCM)
+	if err != nil {
+		t.Fatalf("ParseMethod() error = %v", err)
+	}
+
+	key := func(seed byte) []byte {
+		b := make([]byte, method.KeySize)
+		for i := range b {
+			b[i] = seed + byte(i)
+		}
+		return b
+	}
+
+	headers, err := shadowsocks.EncodeTCPIdentityHeadersTo(
+		nil, method,
+		[][]byte{key(1), key(2)},
+		key(3),
+		bytes.Repeat([]byte{0x42}, method.SaltSize),
+	)
+	if err != nil {
+		t.Fatalf("EncodeTCPIdentityHeadersTo() error = %v", err)
+	}
+
+	if got := hex.EncodeToString(headers); got != identityHeadersAES128 {
+		t.Errorf("identity headers changed\n got: %s\nwant: %s", got, identityHeadersAES128)
+	}
+}
+
+// A UDP identity header, checked against the reference implementation before
+// being frozen. Inputs: aes-128-gcm, iPSK/uPSK seeded 1/3, session 0x1122334455667788,
+// packet 7. Unlike TCP's, it is keyed by the identity PSK itself and masked
+// with the separate header.
+const udpIdentityHeaderAES128 = "5c0278d741070277403036269c8b03f3"
+
+func TestWireVector_UDPIdentityHeader(t *testing.T) {
+	method, err := shadowsocks.ParseMethod(shadowsocks.Method2022Blake3AES128GCM)
+	if err != nil {
+		t.Fatalf("ParseMethod() error = %v", err)
+	}
+
+	key := func(seed byte) []byte {
+		b := make([]byte, method.KeySize)
+		for i := range b {
+			b[i] = seed + byte(i)
+		}
+		return b
+	}
+
+	var separate [shadowsocks.UDPSeparateHeaderLen]byte
+	binary.BigEndian.PutUint64(separate[:shadowsocks.UDPSessionIDLen], 0x1122334455667788)
+	binary.BigEndian.PutUint64(separate[shadowsocks.UDPSessionIDLen:], 7)
+
+	header, err := shadowsocks.EncodeUDPIdentityHeadersTo(nil, [][]byte{key(1)}, key(3), separate[:])
+	if err != nil {
+		t.Fatalf("EncodeUDPIdentityHeadersTo() error = %v", err)
+	}
+
+	if got := hex.EncodeToString(header); got != udpIdentityHeaderAES128 {
+		t.Errorf("UDP identity header changed\n got: %s\nwant: %s", got, udpIdentityHeaderAES128)
 	}
 }

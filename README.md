@@ -523,6 +523,36 @@ Each session keeps a sliding window filter against replayed packet IDs, and the
 server routes by session ID rather than source address, so a session survives a
 client changing network.
 
+### Multiple Users on One Port
+
+[Extensible identity headers](https://github.com/Shadowsocks-NET/shadowsocks-specs/blob/main/2022-2-shadowsocks-2022-extensible-identity-headers.md)
+let one server serve many users on one port. Each client is issued a chain of
+keys, written `iPSK:uPSK`: the identity key names the server, and the user key
+protects the session. The header naming the user is bound to the request salt on
+TCP, and masked with the session and packet ID on UDP, so it differs every time.
+
+```go
+users := shadowsocks.NewUserTable()
+users.AddBase64("alice", method, "...")
+users.AddBase64("bob", method, "...")
+
+handler := &shadowsocks.BaseServerHandler{
+	Config:       cfg, // Config.PSK is now the server's identity key
+	Users:        users,
+	AllowConnect: true,
+}
+```
+
+The client presents both keys, colon separated, which an `ss://` URL carries as
+`ss://method:iPSK:uPSK@host:port`:
+
+```go
+cfg := &shadowsocks.Config{Method: method, PSK: identityPSK + ":" + userPSK}
+```
+
+`ParsedTCPRequestStart.User` and `UDPSession.User()` report who a request
+belongs to, so a handler can apply per-user policy or accounting.
+
 ### Padding
 
 Header padding hides the length of small messages. The policy is configurable:

@@ -120,16 +120,30 @@ func ServePacket(ctx context.Context, pc net.PacketConn, handler UDPServerHandle
 		return err
 	}
 
-	cipher, err := NewUDPCipher(serverCipher.Method, serverCipher.PSK)
+	// A multi-user server is known by its identity key; the keys protecting
+	// bodies belong to its users and are only known once a packet names one.
+	basePSK := serverCipher.PSK
+	if serverCipher.MultiUser() {
+		basePSK = serverCipher.IdentityPSK
+	}
+
+	cipher, err := NewUDPCipher(serverCipher.Method, basePSK)
 	if err != nil {
 		return err
 	}
 
 	relay := &udpRelay{
 		cipher:   cipher,
+		server:   serverCipher,
 		handler:  handler,
 		options:  handler.Options().normalize(),
 		sessions: make(map[uint64]*UDPSession),
+	}
+
+	// The same cipher reads the separate and identity headers, which the
+	// identity key protects; bodies use the user's key instead.
+	if serverCipher.MultiUser() {
+		relay.identity = cipher
 	}
 	defer relay.closeSessions(ctx)
 
@@ -168,9 +182,11 @@ func ServePacket(ctx context.Context, pc net.PacketConn, handler UDPServerHandle
 
 // udpRelay is the state of one ServePacket call.
 type udpRelay struct {
-	cipher  *UDPCipher
-	handler UDPServerHandler
-	options UDPServerOptions
+	cipher   *UDPCipher
+	identity *UDPCipher
+	server   *ServerCipher
+	handler  UDPServerHandler
+	options  UDPServerOptions
 
 	mu       sync.Mutex
 	sessions map[uint64]*UDPSession
@@ -198,6 +214,10 @@ func (r *udpRelay) handlePacket(ctx context.Context, pc net.PacketConn, dst, pac
 		session *UDPSession
 		isNew   bool
 	)
+
+	if r.identity != nil {
+		return r.handleMultiUserPacket(ctx, pc, dst, packet, clientAddr, now)
+	}
 
 	unpacked, err := r.cipher.OpenPacketTo(dst, packet, func(sessionID, packetID uint64) (*UDPSessionCipher, error) {
 		sess, created, err := r.resolveSession(sessionID)
@@ -260,6 +280,138 @@ func (r *udpRelay) handlePacket(ctx context.Context, pc net.PacketConn, dst, pac
 	}
 
 	return nil
+}
+
+// handleMultiUserPacket decrypts a packet naming its user in an identity header.
+func (r *udpRelay) handleMultiUserPacket(
+	ctx context.Context,
+	pc net.PacketConn,
+	dst, packet []byte,
+	clientAddr *net.UDPAddr,
+	now time.Time,
+) error {
+	const headersLen = UDPSeparateHeaderLen + IdentityHeaderLen
+
+	if len(packet) < headersLen {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, ErrShortUDPPacket)
+	}
+
+	sessionID, packetID, _, err := r.identity.PeekSeparateHeader(packet)
+	if err != nil {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
+	}
+
+	// The identity header masks its hash with the plaintext separate header.
+	var separate [UDPSeparateHeaderLen]byte
+	binary.BigEndian.PutUint64(separate[:UDPSessionIDLen], sessionID)
+	binary.BigEndian.PutUint64(separate[UDPSessionIDLen:], packetID)
+
+	named, err := DecodeUDPIdentityHeader(packet[UDPSeparateHeaderLen:headersLen], r.server.IdentityPSK, separate[:])
+	if err != nil {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
+	}
+
+	user, ok := r.server.Users.Lookup(named)
+	if !ok {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, ErrUnknownUser)
+	}
+
+	session, isNew, err := r.resolveUserSession(user, sessionID)
+	if err != nil {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
+	}
+	if !session.filterIsOk(packetID) {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, ErrUDPReplay)
+	}
+
+	body, err := session.clientCipher.OpenBodyTo(dst, packet[headersLen:], separate[:])
+	if err != nil {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
+	}
+
+	var header UDPClientHeader
+	headerLen, err := header.Decode(body)
+	if err != nil {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
+	}
+	if err := ValidateTimestamp(header.Timestamp, now); err != nil {
+		return fmt.Errorf("dropping packet from %s: %w", clientAddr, err)
+	}
+
+	session.filterAdd(packetID)
+	session.touch(now, clientAddr)
+
+	if isNew {
+		if err := r.startSession(ctx, pc, session); err != nil {
+			return fmt.Errorf("session %#x: %w", session.clientSessionID, err)
+		}
+	}
+
+	payload := body[headerLen:]
+	if err := r.handler.OnPacket(ctx, session, header.Target, payload); err != nil {
+		return fmt.Errorf("dropping packet from %s to %s: %w", clientAddr, header.Target.Addr(), err)
+	}
+
+	if header.Target.AddrType == AddrTypeDomain {
+		if !session.domainWriter.WriteToDomain(payload, header.Target.Domain, header.Target.Port) {
+			return fmt.Errorf("dropping packet from %s to %s: resolver queue full", clientAddr, header.Target.Addr())
+		}
+		return nil
+	}
+
+	target, err := r.resolveTarget(header.Target)
+	if err != nil {
+		return fmt.Errorf("resolving target %s: %w", header.Target.Addr(), err)
+	}
+
+	if _, err := session.out.WriteToUDP(payload, target); err != nil {
+		return fmt.Errorf("forwarding to %s: %w", target, err)
+	}
+
+	return nil
+}
+
+// resolveUserSession returns the relay session for a user's client session ID.
+func (r *udpRelay) resolveUserSession(user User, sessionID uint64) (*UDPSession, bool, error) {
+	r.mu.Lock()
+	session, ok := r.sessions[sessionID]
+	r.mu.Unlock()
+
+	if ok {
+		return session, false, nil
+	}
+
+	// The body, and the replies to it, are protected by the user's own key.
+	userCipher, err := NewUDPCipher(r.server.Method, user.PSK)
+	if err != nil {
+		return nil, false, err
+	}
+
+	clientCipher, err := userCipher.NewSession(sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var serverSessionID [UDPSessionIDLen]byte
+	if err := FillRandomBytes(serverSessionID[:]); err != nil {
+		return nil, false, err
+	}
+
+	serverID := binary.BigEndian.Uint64(serverSessionID[:])
+	serverCipher, err := userCipher.NewSession(serverID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return &UDPSession{
+		clientSessionID: sessionID,
+		clientCipher:    clientCipher,
+		filter:          NewSlidingWindowFilter(r.options.FilterSize),
+		serverSessionID: serverID,
+		serverCipher:    serverCipher,
+		user:            user,
+		done:            make(chan struct{}),
+	}, true, nil
 }
 
 // startSession admits a new session, opens its outbound socket and begins
@@ -499,8 +651,16 @@ type UDPSession struct {
 	mu     sync.Mutex
 	filter *SlidingWindowFilter
 
+	// user is set when an identity header named one.
+	user User
+
 	closeOnce sync.Once
 	done      chan struct{}
+}
+
+// User returns the user this session belongs to, empty on a single-user server.
+func (s *UDPSession) User() User {
+	return s.user
 }
 
 // ClientSessionID returns the session ID the client chose.

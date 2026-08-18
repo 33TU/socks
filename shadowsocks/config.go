@@ -3,6 +3,7 @@ package shadowsocks
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 )
 
 // Config holds the configuration for a Shadowsocks proxy.
@@ -31,21 +32,39 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("missing PSK")
 	}
 
-	rawKey, err := base64.StdEncoding.DecodeString(c.PSK)
-	if err != nil {
-		return fmt.Errorf("invalid PSK: must be standard base64: %w", err)
+	want := 32
+	if c.Method == Method2022Blake3AES128GCM {
+		want = 16
 	}
 
-	switch c.Method {
-	case Method2022Blake3AES128GCM:
-		if len(rawKey) != 16 {
-			return fmt.Errorf("invalid PSK length for %s: got %d, want 16", c.Method, len(rawKey))
+	// A chain of keys names a user through identity headers: any identity PSKs
+	// first, then the user PSK the session itself uses.
+	list := c.PSKList()
+
+	for i, psk := range list {
+		// The position only helps when there is more than one key.
+		label := "invalid PSK"
+		if len(list) > 1 {
+			label = fmt.Sprintf("invalid PSK %d", i)
 		}
-	case Method2022Blake3AES256GCM, Method2022Blake3ChaCha20Poly1305:
-		if len(rawKey) != 32 {
-			return fmt.Errorf("invalid PSK length for %s: got %d, want 32", c.Method, len(rawKey))
+
+		rawKey, err := base64.StdEncoding.DecodeString(psk)
+		if err != nil {
+			return fmt.Errorf("%s: must be standard base64: %w", label, err)
+		}
+		if len(rawKey) != want {
+			return fmt.Errorf("%s length for %s: got %d, want %d", label, c.Method, len(rawKey), want)
 		}
 	}
 
 	return nil
+}
+
+// PSKList returns the configured keys: any identity PSKs in order, followed by
+// the user PSK. A single key is just the user PSK.
+func (c *Config) PSKList() []string {
+	if c == nil || c.PSK == "" {
+		return nil
+	}
+	return strings.Split(c.PSK, ":")
 }
