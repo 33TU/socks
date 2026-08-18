@@ -246,6 +246,14 @@ func (d *Dialer) UDPAssociateContext(
 	network string,
 	clientAddr *net.UDPAddr,
 ) (net.Conn, *net.UDPAddr, error) {
+	// network is how the proxy itself is reached, for the association's control
+	// connection, which the protocol requires to be a stream. The datagrams
+	// travel over a UDP socket of their own. Naming a datagram network here
+	// otherwise fails much later, when nothing answers on the relay address.
+	if err := checkControlNetwork(network); err != nil {
+		return nil, nil, err
+	}
+
 	conn, err := d.dialProxy(ctx, network)
 	if err != nil {
 		return nil, nil, err
@@ -331,6 +339,20 @@ func (d *Dialer) ResolveContext(ctx context.Context, network, host string) (net.
 	}
 
 	return reply.IP, nil
+}
+
+// checkControlNetwork reports whether network can carry an association's
+// control connection.
+func checkControlNetwork(network string) error {
+	switch network {
+	case "tcp", "tcp4", "tcp6", "unix", "unixpacket":
+		return nil
+	default:
+		return fmt.Errorf(
+			"invalid network %q for a UDP association: the control connection must be a stream, such as \"tcp\"",
+			network,
+		)
+	}
 }
 
 // dialProxy connects to the SOCKS5 proxy server.

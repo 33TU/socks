@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,5 +127,23 @@ func BenchmarkConnectSetup(b *testing.B) {
 			b.Fatal(err)
 		}
 		conn.Close()
+	}
+}
+
+// TestListenPacketRejectsDatagramNetwork guards a mistake that used to fail
+// far from its cause: naming "udp" dialed the proxy over UDP, and the error
+// only surfaced later as a refused read on the relay address.
+func TestListenPacketRejectsDatagramNetwork(t *testing.T) {
+	d := socks5.NewDialer("127.0.0.1:1080", nil, nil)
+
+	for _, network := range []string{"udp", "udp4", "udp6"} {
+		_, err := d.ListenPacket(context.Background(), network, nil)
+		if err == nil {
+			t.Errorf("ListenPacket(%q) = nil error, want it rejected", network)
+			continue
+		}
+		if !strings.Contains(err.Error(), "control connection must be a stream") {
+			t.Errorf("ListenPacket(%q) error = %v, want it to explain the network", network, err)
+		}
 	}
 }
