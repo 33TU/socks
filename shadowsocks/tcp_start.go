@@ -89,19 +89,6 @@ func (s *ParsedTCPResponseStart) Validate(method Method, expectedRequestSalt []b
 	return nil
 }
 
-func EncodedTCPRequestStartLen(method Method, requestSalt []byte, variableHeaderLen int) (int, error) {
-	if err := method.Validate(); err != nil {
-		return 0, err
-	}
-	if len(requestSalt) != method.SaltSize {
-		return 0, fmt.Errorf("invalid request salt length: got %d, want %d", len(requestSalt), method.SaltSize)
-	}
-	if variableHeaderLen < 0 {
-		return 0, fmt.Errorf("invalid variable header length: %d", variableHeaderLen)
-	}
-	return len(requestSalt) + (TcpRequestFixedHeaderLen + method.TagSize) + (variableHeaderLen + method.TagSize), nil
-}
-
 // WriteTCPRequestStart writes request salt, encrypted fixed header, and encrypted variable header.
 func WriteTCPRequestStart(dst io.Writer, method Method, psk, requestSalt []byte, timestamp time.Time, target Addr, padding, initialData []byte) (*TCPStreamCipher, int64, error) {
 	if err := method.Validate(); err != nil {
@@ -121,7 +108,7 @@ func WriteTCPRequestStart(dst io.Writer, method Method, psk, requestSalt []byte,
 	var fixedHeader TCPRequestFixedHeader
 	fixedHeader.Init(TCPHeaderTypeClientStream, uint64(timestamp.Unix()), uint16(variableHeader.EncodedLen()))
 
-	scratchLen := TcpRequestFixedHeaderLen
+	scratchLen := TCPRequestFixedHeaderLen
 	if variableHeader.EncodedLen() > scratchLen {
 		scratchLen = variableHeader.EncodedLen()
 	}
@@ -162,7 +149,7 @@ func ReadTCPRequestStart(src io.Reader, method Method, psk []byte, now time.Time
 
 	// The salt and the fixed-length header must be read in one call so that the
 	// number of bytes consumed never depends on how far validation got.
-	encFixedLen := TcpRequestFixedHeaderLen + method.TagSize
+	encFixedLen := TCPRequestFixedHeaderLen + method.TagSize
 	startBuf := internal.GetBytes(method.SaltSize + encFixedLen)
 	defer internal.PutBytes(startBuf)
 	n, err := io.ReadFull(src, startBuf)
@@ -178,7 +165,7 @@ func ReadTCPRequestStart(src io.Reader, method Method, psk []byte, now time.Time
 		return nil, total, err
 	}
 
-	fixedPlainScratch := internal.GetBytes(TcpRequestFixedHeaderLen)
+	fixedPlainScratch := internal.GetBytes(TCPRequestFixedHeaderLen)
 	defer internal.PutBytes(fixedPlainScratch)
 	fixedHeader, err := requestCipher.DecodeRequestFixedHeader(encFixed, fixedPlainScratch[:0])
 	if err != nil {
@@ -279,7 +266,7 @@ func ReadTCPResponseStart(src io.Reader, method Method, psk, expectedRequestSalt
 
 	// The salt and the fixed-length header must be read in one call so that the
 	// number of bytes consumed never depends on how far validation got.
-	plainHeaderLen := TcpResponseFixedBaseLen + method.SaltSize
+	plainHeaderLen := TCPResponseFixedBaseLen + method.SaltSize
 	startBuf := internal.GetBytes(method.SaltSize + plainHeaderLen + method.TagSize)
 	defer internal.PutBytes(startBuf)
 	n, err := io.ReadFull(src, startBuf)

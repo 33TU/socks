@@ -48,8 +48,8 @@ func TestTCPRequestFixedHeader_EncodedLen(t *testing.T) {
 	var h shadowsocks.TCPRequestFixedHeader
 	h.Init(shadowsocks.TCPHeaderTypeClientStream, 1, 2)
 
-	if got := h.EncodedLen(); got != shadowsocks.TcpRequestFixedHeaderLen {
-		t.Fatalf("EncodedLen() = %d, want %d", got, shadowsocks.TcpRequestFixedHeaderLen)
+	if got := h.EncodedLen(); got != shadowsocks.TCPRequestFixedHeaderLen {
+		t.Fatalf("EncodedLen() = %d, want %d", got, shadowsocks.TCPRequestFixedHeaderLen)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestTCPRequestFixedHeader_Decode_Invalid(t *testing.T) {
 	}{
 		{
 			name:    "short header",
-			src:     make([]byte, shadowsocks.TcpRequestFixedHeaderLen-1),
+			src:     make([]byte, shadowsocks.TCPRequestFixedHeaderLen-1),
 			wantErr: shadowsocks.ErrShortTCPHeader,
 		},
 		{

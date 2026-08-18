@@ -60,7 +60,7 @@ func TestTCPResponseHeader_EncodedLen(t *testing.T) {
 		Length:      4,
 	}
 
-	want := shadowsocks.TcpResponseFixedBaseLen + 4
+	want := shadowsocks.TCPResponseFixedBaseLen + 4
 	if got := h.EncodedLen(); got != want {
 		t.Fatalf("EncodedLen() = %d, want %d", got, want)
 	}

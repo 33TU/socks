@@ -13,7 +13,7 @@ type TCPChunkReader struct {
 
 	encLenBuf     []byte
 	encPayloadBuf []byte
-	lenScratch    [TcpChunkLengthLen]byte
+	lenScratch    [TCPChunkLengthLen]byte
 
 	chunkBuf []byte
 	readBuf  []byte

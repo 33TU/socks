@@ -10,9 +10,11 @@ const (
 	TCPHeaderTypeServerStream = 0x01
 )
 
+// Plaintext header sizes. The response header additionally carries the request
+// salt, whose length depends on the method.
 const (
-	TcpRequestFixedHeaderLen = 1 + 8 + 2
-	TcpResponseFixedBaseLen  = 1 + 8 + 2
+	TCPRequestFixedHeaderLen = 1 + 8 + 2
+	TCPResponseFixedBaseLen  = 1 + 8 + 2
 )
 
 const (
@@ -20,7 +22,9 @@ const (
 	AeadTagSize   = 16
 )
 
-const TcpChunkLengthLen = 2
+// TCPChunkLengthLen is the size of a length chunk's plaintext, a 16-bit
+// big-endian payload length.
+const TCPChunkLengthLen = 2
 
 // Common validation and decode errors for Shadowsocks TCP headers.
 var (

@@ -113,7 +113,7 @@ func (s *TCPStreamCipher) Validate() error {
 
 // EncryptedChunkLength returns the ciphertext size of a TCP chunk length field.
 func (s *TCPStreamCipher) EncryptedChunkLength() int {
-	return TcpChunkLengthLen + s.Method.TagSize
+	return TCPChunkLengthLen + s.Method.TagSize
 }
 
 // EncryptedPayloadLength returns the ciphertext size of a TCP payload chunk.
@@ -123,7 +123,7 @@ func (s *TCPStreamCipher) EncryptedPayloadLength(payloadLen int) int {
 
 // EncodeChunkLengthTo encrypts a 2-byte big-endian payload length into dst.
 func (s *TCPStreamCipher) EncodeChunkLengthTo(dst []byte, payloadLen uint16) ([]byte, error) {
-	var buf [TcpChunkLengthLen]byte
+	var buf [TCPChunkLengthLen]byte
 	binary.BigEndian.PutUint16(buf[:], payloadLen)
 	return s.SealTo(dst, buf[:])
 }
@@ -134,8 +134,8 @@ func (s *TCPStreamCipher) DecodeChunkLength(src []byte, scratch []byte) (uint16,
 	if err != nil {
 		return 0, err
 	}
-	if len(plain) != TcpChunkLengthLen {
-		return 0, fmt.Errorf("invalid TCP chunk length size: got %d, want %d", len(plain), TcpChunkLengthLen)
+	if len(plain) != TCPChunkLengthLen {
+		return 0, fmt.Errorf("invalid TCP chunk length size: got %d, want %d", len(plain), TCPChunkLengthLen)
 	}
 
 	return binary.BigEndian.Uint16(plain), nil

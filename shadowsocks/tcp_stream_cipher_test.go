@@ -280,7 +280,7 @@ func TestTCPStreamCipher_EncryptedLengths(t *testing.T) {
 
 	s, _, method := newTestCipherPair(t)
 
-	if got, want := s.EncryptedChunkLength(), shadowsocks.TcpChunkLengthLen+method.TagSize; got != want {
+	if got, want := s.EncryptedChunkLength(), shadowsocks.TCPChunkLengthLen+method.TagSize; got != want {
 		t.Fatalf("EncryptedChunkLength() = %d, want %d", got, want)
 	}
 
@@ -299,7 +299,7 @@ func TestTCPStreamCipher_ChunkLength_RoundTrip(t *testing.T) {
 		t.Fatalf("EncodeChunkLengthTo() error = %v", err)
 	}
 
-	if got, want := len(ciphertext), shadowsocks.TcpChunkLengthLen+method.TagSize; got != want {
+	if got, want := len(ciphertext), shadowsocks.TCPChunkLengthLen+method.TagSize; got != want {
 		t.Fatalf("len(ciphertext) = %d, want %d", got, want)
 	}
 

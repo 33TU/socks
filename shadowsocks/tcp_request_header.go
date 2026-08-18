@@ -31,13 +31,13 @@ func (h *TCPRequestFixedHeader) Validate() error {
 
 // EncodedLen returns the number of bytes required to encode the fixed request header.
 func (h *TCPRequestFixedHeader) EncodedLen() int {
-	return TcpRequestFixedHeaderLen
+	return TCPRequestFixedHeaderLen
 }
 
 // Decode decodes a fixed request header from src.
 // It returns the number of bytes consumed.
 func (h *TCPRequestFixedHeader) Decode(src []byte) (int, error) {
-	if len(src) < TcpRequestFixedHeaderLen {
+	if len(src) < TCPRequestFixedHeaderLen {
 		return 0, ErrShortTCPHeader
 	}
 
@@ -45,7 +45,7 @@ func (h *TCPRequestFixedHeader) Decode(src []byte) (int, error) {
 	h.Timestamp = binary.BigEndian.Uint64(src[1:9])
 	h.Length = binary.BigEndian.Uint16(src[9:11])
 
-	return TcpRequestFixedHeaderLen, h.Validate()
+	return TCPRequestFixedHeaderLen, h.Validate()
 }
 
 // EncodeTo encodes the fixed request header into dst.
