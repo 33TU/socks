@@ -1,10 +1,11 @@
 # 🧦 socks
 
-A lightweight, pure Go implementation of **SOCKS4**, **SOCKS4a**, and **SOCKS5** protocols, providing both **client** and **server** support with advanced features like proxy chaining and multi-protocol muxing.
+A lightweight, pure Go implementation of the **SOCKS4**, **SOCKS4a**, **SOCKS5**, and **Shadowsocks 2022** protocols, providing both **client** and **server** support with advanced features like proxy chaining and multi-protocol muxing.
 
 ## ✨ Features
 
 - 🔌 **Full SOCKS support**: SOCKS4, SOCKS4a, and SOCKS5
+- 🛡️ **Shadowsocks 2022**: TCP and UDP, client and server, with replay protection
 - 🔀 **Multi-protocol mux**: Handle both SOCKS4 and SOCKS5 on the same port
 - ⛓️ **Proxy chaining**: Chain multiple SOCKS proxies together
 - 🔐 **Authentication**: Support for no-auth, username/password, and GSSAPI
@@ -16,6 +17,13 @@ A lightweight, pure Go implementation of **SOCKS4**, **SOCKS4a**, and **SOCKS5**
 
 ```bash
 go get github.com/33TU/socks
+```
+
+Shadowsocks 2022 lives in its own module, so its cryptographic dependencies stay
+out of the SOCKS packages:
+
+```bash
+go get github.com/33TU/socks/shadowsocks
 ````
 
 ## 🚀 Quick Start
@@ -325,6 +333,219 @@ func main() {
 }
 ```
 
+## 🛡️ Shadowsocks 2022
+
+The [`shadowsocks/`](shadowsocks/) package implements the
+[Shadowsocks 2022 Edition](shadowsocks/doc.txt) (`2022-blake3-*`) for both TCP and UDP.
+Earlier editions are deliberately not supported: they lack mandatory replay
+protection and rely on obsolete cryptography.
+
+It is a **separate Go module**, `github.com/33TU/socks/shadowsocks`, so that
+BLAKE3 and `golang.org/x/crypto` are only pulled in by projects that actually use
+Shadowsocks. Importing `github.com/33TU/socks/socks5` brings in neither. The
+module is versioned with its own `shadowsocks/vX.Y.Z` tags.
+
+Supported methods:
+
+| Method | Key/salt bytes | UDP construction |
+| --- | --: | --- |
+| `2022-blake3-aes-128-gcm` | 16 | AES-GCM with an encrypted separate header |
+| `2022-blake3-aes-256-gcm` | 32 | AES-GCM with an encrypted separate header |
+| `2022-blake3-chacha20-poly1305` | 32 | XChaCha20-Poly1305 with a random nonce |
+
+The pre-shared key is supplied directly, base64 encoded, and must be the exact
+size the method requires. Generate one with:
+
+```bash
+openssl rand -base64 16   # 2022-blake3-aes-128-gcm
+openssl rand -base64 32   # 2022-blake3-aes-256-gcm, 2022-blake3-chacha20-poly1305
+```
+
+### Shadowsocks Server
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/33TU/socks/shadowsocks"
+)
+
+func main() {
+	cfg := &shadowsocks.Config{
+		Method: shadowsocks.Method2022Blake3AES128GCM,
+		PSK:    "iDN+jVYAcTkUxwNICMTQRA==",
+	}
+
+	handler := &shadowsocks.BaseServerHandler{
+		Config:             cfg,
+		AllowConnect:       true,
+		RequestTimeout:     30 * time.Second,
+		ConnectConnTimeout: 5 * time.Minute,
+	}
+
+	// UDP relay on the same port.
+	go func() {
+		udp := &shadowsocks.BaseUDPServerHandler{Config: cfg, AllowRelay: true}
+		log.Fatal(shadowsocks.ListenAndServePacket(context.Background(), ":8388", udp))
+	}()
+
+	log.Println("Shadowsocks 2022 server listening on :8388")
+	log.Fatal(shadowsocks.ListenAndServe(context.Background(), "tcp", ":8388", handler))
+}
+```
+
+Requests are validated before anything is relayed: the header type, a timestamp
+within 30 seconds of system time, and a salt that has not been seen in the last
+60 seconds. A connection that fails any of these is drained rather than closed,
+so a prober cannot learn how many bytes the server consumed.
+
+TCP and UDP are wholly independent: separate entry points, separate handlers,
+and no shared runtime state. Serve whichever transports you want, on the same
+address if you want both.
+
+| Mode | Call |
+| --- | --- |
+| TCP only | `ListenAndServe(ctx, "tcp", addr, handler)` |
+| UDP only | `ListenAndServePacket(ctx, addr, udpHandler)` |
+| Both | both, same address |
+
+Unlike SOCKS5 UDP ASSOCIATE, a Shadowsocks UDP relay needs no TCP connection to
+work, so a UDP-only server is perfectly usable on its own. `Dialer.ListenPacket`
+opens a UDP socket and nothing else.
+
+Both servers take a handler, `ServerHandler` for TCP and `UDPServerHandler` for
+UDP, with `BaseServerHandler` and `BaseUDPServerHandler` covering the usual
+cases. The UDP handler decides policy and placement per session:
+
+```go
+handler := &shadowsocks.BaseUDPServerHandler{
+	Config:     cfg,
+	AllowRelay: true,
+
+	// Source address outbound sockets bind to.
+	OutboundAddr: &net.UDPAddr{IP: net.ParseIP("2001:db8::1")},
+
+	// Called for every validated packet, before name resolution.
+	TargetAuthorizer: func(ctx context.Context, session *shadowsocks.UDPSession, target shadowsocks.Addr, payload []byte) error {
+		if target.Port == 25 {
+			return fmt.Errorf("smtp not allowed")
+		}
+		return nil
+	},
+}
+```
+
+Implement `UDPServerHandler` directly for more control: `OnSession` admits or
+rejects a session, `ListenPacket` supplies its outbound socket, `OnPacket`
+screens each datagram, and `OnSessionClose`, `OnError` and `OnPanic` report what
+happens. A panic in any of them is contained rather than taking down the relay.
+
+### Shadowsocks Client (TCP)
+
+```go
+dialer, err := shadowsocks.NewDialerFromURLString(
+	"ss://2022-blake3-aes-128-gcm:iDN+jVYAcTkUxwNICMTQRA==@127.0.0.1:8388",
+	nil,
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+client := &http.Client{
+	Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		},
+	},
+}
+
+resp, err := client.Get("https://example.com")
+```
+
+### Local SOCKS5 Front End
+
+A Shadowsocks client is normally exposed to local applications as a SOCKS5
+server. Because `shadowsocks.Dialer` satisfies the dialer interface the SOCKS5
+server takes, that is just a matter of wiring the two together:
+
+```go
+// Both plain method:psk and SIP002 base64 userinfo are accepted.
+dialer, err := shadowsocks.NewDialerFromURLString("ss://...", nil)
+if err != nil {
+	log.Fatal(err)
+}
+
+handler := &socks5.BaseServerHandler{
+	Dialer:       dialer, // every outbound connection goes through the tunnel
+	AllowConnect: true,
+}
+
+log.Fatal(socks5.ListenAndServe(ctx, "tcp", "127.0.0.1:1080", handler))
+```
+
+```bash
+curl --socks5-hostname 127.0.0.1:1080 https://example.com
+```
+
+Target host names are passed through to the Shadowsocks server and resolved
+there, so DNS does not leak locally. Leave BIND, UDP ASSOCIATE and RESOLVE
+disabled on such a handler: the SOCKS5 server implements those with its own
+sockets and resolver, which would send that traffic outside the tunnel. For UDP
+through Shadowsocks, use `Dialer.ListenPacket` instead.
+
+### Shadowsocks Client (UDP)
+
+`ListenPacket` opens one UDP relay session and returns a `net.PacketConn`, so
+datagrams can be sent to any target through the proxy:
+
+```go
+conn, err := dialer.ListenPacket(context.Background(), nil)
+if err != nil {
+	log.Fatal(err)
+}
+defer conn.Close()
+
+resolver, _ := net.ResolveUDPAddr("udp", "1.1.1.1:53")
+if _, err := conn.WriteTo(dnsQuery, resolver); err != nil {
+	log.Fatal(err)
+}
+
+buf := make([]byte, 4096)
+n, from, err := conn.ReadFrom(buf)
+```
+
+Packets that fail to decrypt or validate are dropped and reading continues.
+Each session keeps a sliding window filter against replayed packet IDs, and the
+server routes by session ID rather than source address, so a session survives a
+client changing network.
+
+### Padding
+
+Header padding hides the length of small messages. The policy is configurable:
+
+```go
+dialer.Padding = shadowsocks.PadWhenEmpty(shadowsocks.MaxPaddingLength) // default for TCP
+udpHandler.Padding = shadowsocks.PadPlainDNS(shadowsocks.MaxPaddingLength) // default for UDP
+```
+
+`PadWhenEmpty` pads only requests that carry no initial payload, which the
+protocol requires; `PadPlainDNS` pads port 53 traffic; `PadAlways` and
+`PadNever` are also available.
+
+### Interoperability
+
+The wire format was verified against the reference implementation,
+[shadowsocks-go](https://github.com/database64128/shadowsocks-go), in both
+directions: bytes this package emits were parsed by its parsers, and bytes its
+encoders produced were parsed here. Those exact byte sequences are frozen as
+test vectors in `shadowsocks/wire_vectors_test.go`, so any change to the
+encoding fails the test suite. The reference implementation itself is not a
+dependency.
+
 ## 📁 Examples
 
 Check the [`examples/`](examples/) directory for more complete examples:
@@ -336,6 +557,10 @@ Check the [`examples/`](examples/) directory for more complete examples:
 * [`socks5-custom-handler/`](examples/socks5-custom-handler/) - Custom handler implementation
 * [`socks5-udp-associate/`](examples/socks5-udp-associate/) - UDP via SOCKS5
 * [`socks5-resolve/`](examples/socks5-resolve/) - DNS resolve via SOCKS5
+* [`shadowsocks/examples/server/`](shadowsocks/examples/server/) - Shadowsocks 2022 TCP and UDP server
+* [`shadowsocks/examples/dial/`](shadowsocks/examples/dial/) - HTTP request through a Shadowsocks 2022 proxy
+* [`shadowsocks/examples/udp/`](shadowsocks/examples/udp/) - DNS query through a Shadowsocks 2022 UDP relay
+* [`shadowsocks/examples/socks5-local/`](shadowsocks/examples/socks5-local/) - Local SOCKS5 server tunnelling through Shadowsocks 2022
 
 ---
 
@@ -343,6 +568,7 @@ Check the [`examples/`](examples/) directory for more complete examples:
 
 * **`socks4/`** - SOCKS4/4a protocol implementation
 * **`socks5/`** - SOCKS5 protocol with authentication support
+* **`shadowsocks/`** - Shadowsocks 2022 Edition, TCP and UDP (separate module)
 * **`proxy/`** - Multi-protocol mux server
 * **`chain/`** - Proxy chaining functionality
 * **`net/`** - Network utilities and custom connection types

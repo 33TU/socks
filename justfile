@@ -22,6 +22,23 @@ run-example-socks5-resolve:
 run-example-socks5-udp-associate:
     go run examples/socks5-udp-associate/main.go
 
+# The shadowsocks module is separate, so its examples are run from inside it.
+run-example-shadowsocks-server:
+    cd shadowsocks && go run ./examples/server
+
+run-example-shadowsocks-dial:
+    cd shadowsocks && go run ./examples/dial
+
+run-example-shadowsocks-udp:
+    cd shadowsocks && go run ./examples/udp
+
+# Local SOCKS5 front end tunnelling through a Shadowsocks proxy.
+run-example-shadowsocks-socks5-local:
+    cd shadowsocks && go run ./examples/socks5-local
+
+test-shadowsocks:
+    cd shadowsocks && go test ./...
+
 curl-socks4-server:
     curl --socks4 127.0.0.1:1080 https://httpbin.org/ip
 
