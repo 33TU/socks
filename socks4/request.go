@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 )
 
 var (
@@ -60,7 +61,7 @@ func (r *Request) Host() string {
 
 // Addr returns the destination address in "host:port" format.
 func (r *Request) Addr() string {
-	return net.JoinHostPort(r.Host(), fmt.Sprintf("%d", r.Port))
+	return net.JoinHostPort(r.Host(), strconv.Itoa(int(r.Port)))
 }
 
 // Init initializes a SOCKS4 or SOCKS4a CONNECT/BIND request.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 )
 
 // Common validation errors.
@@ -38,7 +39,7 @@ func (r *Request) GetHost() string {
 
 // Addr returns the full "host:port" string form.
 func (r *Request) Addr() string {
-	return net.JoinHostPort(r.GetHost(), fmt.Sprint(r.Port))
+	return net.JoinHostPort(r.GetHost(), strconv.Itoa(int(r.Port)))
 }
 
 // Init initializes a SOCKS5 request.

@@ -74,3 +74,57 @@ func benchmarkRelayThroughput(b *testing.B, timeout time.Duration) {
 
 func BenchmarkRelayNoTimeout(b *testing.B)   { benchmarkRelayThroughput(b, 0) }
 func BenchmarkRelayWithTimeout(b *testing.B) { benchmarkRelayThroughput(b, 60*time.Second) }
+
+// BenchmarkConnectSetup measures a whole connection through the proxy:
+// handshake, request, the proxy's dial to the target, and the reply. Short
+// lived connections, as most proxied HTTP is, pay this rather than throughput.
+func BenchmarkConnectSetup(b *testing.B) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer target.Close()
+
+	go func() {
+		for {
+			conn, err := target.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				io.Copy(io.Discard, conn)
+			}()
+		}
+	}()
+
+	handler := &socks5.BaseServerHandler{
+		AllowConnect:       true,
+		ConnectConnTimeout: 60 * time.Second,
+		ConnectBufferSize:  32 * 1024,
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go socks5.Serve(ctx, ln, handler)
+
+	d := socks5.NewDialer(ln.Addr().String(), nil, nil)
+	addr := target.Addr().String()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		conn, err := d.DialContext(context.Background(), "tcp", addr)
+		if err != nil {
+			b.Fatal(err)
+		}
+		conn.Close()
+	}
+}

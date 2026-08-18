@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 )
 
 // Common validation and decode/encode errors for Shadowsocks addresses.
@@ -45,7 +46,7 @@ func (a *Addr) GetHost() string {
 
 // Addr returns the address as a combined host:port string.
 func (a *Addr) Addr() string {
-	return net.JoinHostPort(a.GetHost(), fmt.Sprint(a.Port))
+	return net.JoinHostPort(a.GetHost(), strconv.Itoa(int(a.Port)))
 }
 
 // Validate checks the correctness of the address fields.
