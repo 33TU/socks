@@ -12,6 +12,39 @@ import (
 	socksnet "github.com/33TU/socks/net"
 )
 
+// startFakeDNSForBench is startFakeDNS for a benchmark, which cannot use *testing.T.
+func startFakeDNSForBench(b *testing.B) *stdnet.Resolver {
+	b.Helper()
+
+	conn, err := stdnet.ListenUDP("udp", &stdnet.UDPAddr{IP: stdnet.ParseIP("127.0.0.1")})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { conn.Close() })
+
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, from, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if resp := dnsAnswer(buf[:n]); resp != nil {
+				conn.WriteToUDP(resp, from)
+			}
+		}
+	}()
+
+	addr := conn.LocalAddr().String()
+	return &stdnet.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (stdnet.Conn, error) {
+			var d stdnet.Dialer
+			return d.DialContext(ctx, "udp", addr)
+		},
+	}
+}
+
 // fakeDNS answers every A query with 127.0.0.1 and counts the queries it sees,
 // so a test can tell a cache hit from a lookup.
 type fakeDNS struct {
@@ -298,4 +331,59 @@ func TestAsyncUDPWriter_CloseDoesNotWaitForStalledLookups(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("Close took %v, want it to abort lookups rather than wait them out", elapsed)
 	}
+}
+
+// discardPacketConn swallows datagrams so a benchmark measures the writer
+// rather than the kernel.
+type discardPacketConn struct{ stdnet.PacketConn }
+
+func (discardPacketConn) WriteTo(p []byte, _ stdnet.Addr) (int, error) { return len(p), nil }
+func (discardPacketConn) Close() error                                 { return nil }
+
+// benchCachedWriter returns a writer with domain already resolved, so the
+// benchmark exercises the cached send path a relay spends its time in.
+func benchCachedWriter(b *testing.B, domain string) *socksnet.AsyncUDPWriter {
+	b.Helper()
+
+	dns := startFakeDNSForBench(b)
+	w := socksnet.NewAsyncUDPWriter(discardPacketConn{}, &socksnet.AsyncUDPWriterConfig{
+		Resolver: dns,
+	})
+
+	// Prime the cache and wait for the lookup to land.
+	for range 100 {
+		w.WriteToDomain([]byte("warm"), domain, 53)
+		time.Sleep(time.Millisecond)
+	}
+
+	return w
+}
+
+func BenchmarkAsyncUDPWriterCachedSerial(b *testing.B) {
+	w := benchCachedWriter(b, "cached.example")
+	defer w.Close()
+
+	payload := make([]byte, 1400)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		w.WriteToDomain(payload, "cached.example", 53)
+	}
+}
+
+func BenchmarkAsyncUDPWriterCachedParallel(b *testing.B) {
+	w := benchCachedWriter(b, "cached.example")
+	defer w.Close()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		payload := make([]byte, 1400)
+		for pb.Next() {
+			w.WriteToDomain(payload, "cached.example", 53)
+		}
+	})
 }

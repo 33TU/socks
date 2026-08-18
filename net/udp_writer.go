@@ -2,8 +2,10 @@ package net
 
 import (
 	"context"
+	"maps"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/33TU/socks/internal"
@@ -48,8 +50,20 @@ type AsyncUDPWriter struct {
 	cacheTTL  time.Duration
 	cacheSize int
 
-	mu    sync.RWMutex
-	cache map[string]udpCacheEntry
+	// cache is replaced wholesale rather than mutated, so a lookup is an
+	// atomic load and a map read with no lock at all. Reads happen per
+	// datagram; writes only when a name is resolved, once per TTL.
+	cache atomic.Pointer[map[udpCacheKey]udpCacheEntry]
+
+	// storeMu serializes the copy-on-write updates, not the readers.
+	storeMu sync.Mutex
+}
+
+// udpCacheKey names a resolved target. The port is part of the key so the
+// address object can be cached whole and reused without allocating.
+type udpCacheKey struct {
+	domain string
+	port   uint16
 }
 
 // AsyncUDPWriterConfig configures an AsyncUDPWriter.
@@ -84,7 +98,7 @@ type udpWriteItem struct {
 }
 
 type udpCacheEntry struct {
-	ip      net.IP
+	addr    *net.UDPAddr
 	expires time.Time
 }
 
@@ -106,8 +120,10 @@ func NewAsyncUDPWriter(conn net.PacketConn, cfg *AsyncUDPWriterConfig) *AsyncUDP
 		done:      make(chan struct{}),
 		cacheTTL:  cfg.CacheTTL,
 		cacheSize: cfg.CacheSize,
-		cache:     make(map[string]udpCacheEntry),
 	}
+
+	empty := make(map[udpCacheKey]udpCacheEntry)
+	w.cache.Store(&empty)
 
 	if w.resolver == nil {
 		w.resolver = net.DefaultResolver
@@ -147,8 +163,8 @@ func NewAsyncUDPWriter(conn net.PacketConn, cfg *AsyncUDPWriterConfig) *AsyncUDP
 // It never blocks. It reports false when the datagram was dropped, either
 // because the queue was full or the writer is closed.
 func (w *AsyncUDPWriter) WriteToDomain(payload []byte, domain string, port uint16) bool {
-	if ip, ok := w.lookupCache(domain); ok {
-		w.send(payload, &net.UDPAddr{IP: ip, Port: int(port)})
+	if addr, ok := w.lookupCache(domain, port); ok {
+		w.send(payload, addr)
 		return true
 	}
 
@@ -212,23 +228,23 @@ func (w *AsyncUDPWriter) work() {
 			default:
 			}
 
-			ip, err := w.resolve(item.domain)
+			addr, err := w.resolve(item.domain, item.port)
 			if err != nil {
 				internal.PutBuffer(item.payload)
 				w.reportError(err)
 				continue
 			}
 
-			w.send(item.payload.B, &net.UDPAddr{IP: ip, Port: int(item.port)})
+			w.send(item.payload.B, addr)
 			internal.PutBuffer(item.payload)
 		}
 	}
 }
 
-// resolve returns an address for domain, consulting the cache first.
-func (w *AsyncUDPWriter) resolve(domain string) (net.IP, error) {
-	if ip, ok := w.lookupCache(domain); ok {
-		return ip, nil
+// resolve returns an address for domain:port, consulting the cache first.
+func (w *AsyncUDPWriter) resolve(domain string, port uint16) (*net.UDPAddr, error) {
+	if addr, ok := w.lookupCache(domain, port); ok {
+		return addr, nil
 	}
 
 	ctx, cancel := context.WithTimeout(w.ctx, DefaultUDPWriterResolveWait)
@@ -242,38 +258,42 @@ func (w *AsyncUDPWriter) resolve(domain string) (net.IP, error) {
 		return nil, &net.DNSError{Err: "no addresses", Name: domain, IsNotFound: true}
 	}
 
-	w.storeCache(domain, ips[0])
-	return ips[0], nil
+	return w.storeCache(domain, port, ips[0]), nil
 }
 
-func (w *AsyncUDPWriter) lookupCache(domain string) (net.IP, bool) {
-	w.mu.RLock()
-	entry, ok := w.cache[domain]
-	w.mu.RUnlock()
-
+func (w *AsyncUDPWriter) lookupCache(domain string, port uint16) (*net.UDPAddr, bool) {
+	entry, ok := (*w.cache.Load())[udpCacheKey{domain: domain, port: port}]
 	if !ok || time.Now().After(entry.expires) {
 		return nil, false
 	}
-	return entry.ip, true
+	return entry.addr, true
 }
 
-func (w *AsyncUDPWriter) storeCache(domain string, ip net.IP) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (w *AsyncUDPWriter) storeCache(domain string, port uint16, ip net.IP) *net.UDPAddr {
+	addr := &net.UDPAddr{IP: append(net.IP(nil), ip...), Port: int(port)}
 
-	// Bounded, and cheapest to clear wholesale: entries are equivalent and
+	w.storeMu.Lock()
+	defer w.storeMu.Unlock()
+
+	current := *w.cache.Load()
+
+	// Bounded, and cheapest to start over: entries are equivalent and
 	// short-lived, so there is nothing worth choosing between them.
-	if len(w.cache) >= w.cacheSize {
-		clear(w.cache)
+	next := make(map[udpCacheKey]udpCacheEntry, len(current)+1)
+	if len(current) < w.cacheSize {
+		maps.Copy(next, current)
 	}
 
-	w.cache[domain] = udpCacheEntry{
-		ip:      append(net.IP(nil), ip...),
+	next[udpCacheKey{domain: domain, port: port}] = udpCacheEntry{
+		addr:    addr,
 		expires: time.Now().Add(w.cacheTTL),
 	}
+
+	w.cache.Store(&next)
+	return addr
 }
 
-func (w *AsyncUDPWriter) send(payload []byte, addr *net.UDPAddr) {
+func (w *AsyncUDPWriter) send(payload []byte, addr net.Addr) {
 	if _, err := w.conn.WriteTo(payload, addr); err != nil {
 		w.reportError(err)
 	}

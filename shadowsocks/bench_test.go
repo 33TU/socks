@@ -2,6 +2,8 @@ package shadowsocks_test
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -336,6 +338,81 @@ func BenchmarkUDPPeekSeparateHeader(b *testing.B) {
 
 	for range b.N {
 		if _, _, _, err := cipher.PeekSeparateHeader(packet); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkUDPRelayRoundTrip measures a datagram's whole journey through a real
+// relay: client encrypt, socket, server decrypt, forward, echo, and back. It is
+// the number that says whether the crypto path is worth tuning further.
+func BenchmarkUDPRelayRoundTrip(b *testing.B) {
+	echo, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer echo.Close()
+
+	go func() {
+		buf := make([]byte, 64*1024)
+		for {
+			n, from, err := echo.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if _, err := echo.WriteTo(buf[:n], from); err != nil {
+				return
+			}
+		}
+	}()
+
+	methodName := shadowsocks.Method2022Blake3AES128GCM
+	psk := make([]byte, 16)
+	for i := range psk {
+		psk[i] = byte(i * 7)
+	}
+
+	cfg := &shadowsocks.Config{
+		Method: methodName,
+		PSK:    base64.StdEncoding.EncodeToString(psk),
+	}
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer pc.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go shadowsocks.ServePacket(ctx, pc, &shadowsocks.BaseUDPServerHandler{
+		Config:     cfg,
+		AllowRelay: true,
+	})
+
+	d := shadowsocks.NewDialer(pc.LocalAddr().String(), cfg, nil)
+	conn, err := d.ListenPacket(context.Background(), nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer conn.Close()
+
+	target := echo.LocalAddr().(*net.UDPAddr)
+	payload := make([]byte, 1400)
+	buf := make([]byte, 64*1024)
+
+	_ = conn.SetDeadline(time.Now().Add(time.Minute))
+
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		if _, err := conn.WriteTo(payload, target); err != nil {
+			b.Fatal(err)
+		}
+		if _, _, err := conn.ReadFrom(buf); err != nil {
 			b.Fatal(err)
 		}
 	}
