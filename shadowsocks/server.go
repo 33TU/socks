@@ -2,7 +2,6 @@ package shadowsocks
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -87,13 +86,6 @@ type ServerHandler interface {
 	OnPanic(ctx context.Context, conn net.Conn, r any)
 }
 
-// Accept backoff bounds applied when a listener reports a recoverable error,
-// such as running out of file descriptors.
-const (
-	minAcceptDelay = 5 * time.Millisecond
-	maxAcceptDelay = time.Second
-)
-
 // Serve accepts incoming connections on the listener and serves Shadowsocks requests.
 //
 // It returns when ctx is done or the listener fails permanently. Recoverable
@@ -103,54 +95,10 @@ func Serve(ctx context.Context, listener net.Listener, handler ServerHandler) er
 		return fmt.Errorf("nil handler provided")
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	go func() {
-		<-ctx.Done()
-		listener.Close()
-	}()
-
-	var delay time.Duration
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-			}
-
-			// A closed listener is terminal; anything else may be transient, so
-			// back off instead of spinning on it.
-			if errors.Is(err, net.ErrClosed) {
-				handler.OnError(ctx, nil, err)
-				return err
-			}
-
-			handler.OnError(ctx, nil, err)
-
-			if delay == 0 {
-				delay = minAcceptDelay
-			} else {
-				delay = min(2*delay, maxAcceptDelay)
-			}
-
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil
-			case <-timer.C:
-			}
-
-			continue
-		}
-
-		delay = 0
-		go ServeConn(ctx, handler, conn)
-	}
+	return socksnet.AcceptLoop(ctx, listener,
+		func(err error) { handler.OnError(ctx, nil, err) },
+		func(conn net.Conn) { go ServeConn(ctx, handler, conn) },
+	)
 }
 
 // ListenAndServe listens on the network address and serves Shadowsocks requests.

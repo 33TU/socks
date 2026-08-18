@@ -54,9 +54,16 @@ func startSOCKS5Server(t *testing.T, handler socks5.ServerHandler) net.Listener 
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	// Cleanups run in reverse order, so this waits for the server to stop after
+	// the cancel below. Without it the goroutine could log past the end of the
+	// test, which races the testing package's own state.
+	t.Cleanup(func() { <-done })
 	t.Cleanup(cancel)
 
 	go func() {
+		defer close(done)
 		if err := socks5.Serve(ctx, ln, handler); err != nil {
 			t.Logf("SOCKS5 server ended: %v", err)
 		}

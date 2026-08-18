@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/33TU/socks/internal"
+	socksnet "github.com/33TU/socks/net"
 )
 
 // DefaultServerHandler is a default implementation used when no custom ServerHandler is provided to Serve or ListenAndServe.
@@ -73,25 +74,10 @@ func Serve(ctx context.Context, listener net.Listener, handler ServerHandler) er
 		handler = DefaultServerHandler
 	}
 
-	go func() {
-		<-ctx.Done()
-		listener.Close()
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-			conn, err := listener.Accept()
-			if err != nil {
-				handler.OnError(ctx, nil, err)
-				continue
-			}
-
-			go ServeConn(ctx, handler, conn)
-		}
-	}
+	return socksnet.AcceptLoop(ctx, listener,
+		func(err error) { handler.OnError(ctx, nil, err) },
+		func(conn net.Conn) { go ServeConn(ctx, handler, conn) },
+	)
 }
 
 // ListenAndServe listens on the network address and serves SOCKS5 requests.

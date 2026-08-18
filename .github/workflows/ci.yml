@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.module }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # shadowsocks is a separate module, so a run at the repository root
+        # would not build or test it at all.
+        module: [".", "shadowsocks"]
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./... -count=1
+
+      - name: go test -race
+        run: go test ./... -count=1 -race
+
+      - name: go mod tidy is clean
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  # The root module must stay free of the shadowsocks module's cryptographic
+  # dependencies; that separation is the reason the two are split.
+  dependencies:
+    name: root dependencies stay minimal
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: no crypto dependencies in the root module
+        run: |
+          if go list -m all | grep -Ei 'blake3|x/crypto'; then
+            echo "the root module has picked up a shadowsocks dependency"
+            exit 1
+          fi
